@@ -133,6 +133,10 @@ def check_parallel(
     This splits the work filestream-by-filestream. If you need to do work across
     multiple files, as in the similarity-checker, then implement the map/reduce mixin functionality.
     """
+    if jobs < 1:
+        warnings.warn("jobs must be >= 1; defaulting to 1", UserWarning)
+        jobs = 1
+
     # The linter is inherited by all the pool's workers, i.e. the linter
     # is identical to the linter object here. This is required so that
     # a custom PyLinter object can be used.
