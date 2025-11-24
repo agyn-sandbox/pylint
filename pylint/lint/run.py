@@ -52,12 +52,12 @@ def _query_cpu() -> int | None:
         with open("/sys/fs/cgroup/cpu/cpu.cfs_period_us", encoding="utf-8") as file:
             cpu_period = int(file.read().rstrip())
         # Divide quota by period and you should get num of allotted CPU to the container, rounded down if fractional.
-        avail_cpu = int(cpu_quota / cpu_period)
+        avail_cpu = max(int(cpu_quota / cpu_period), 1)
     elif Path("/sys/fs/cgroup/cpu/cpu.shares").is_file():
         with open("/sys/fs/cgroup/cpu/cpu.shares", encoding="utf-8") as file:
             cpu_shares = int(file.read().rstrip())
         # For AWS, gives correct value * 1024.
-        avail_cpu = int(cpu_shares / 1024)
+        avail_cpu = max(int(cpu_shares / 1024), 1)
     return avail_cpu
 
 
@@ -75,7 +75,7 @@ def _cpu_count() -> int:
         cpu_count = multiprocessing.cpu_count()
     else:
         cpu_count = 1
-    if cpu_share is not None:
+    if cpu_share:
         return min(cpu_share, cpu_count)
     return cpu_count
 
@@ -183,6 +183,9 @@ group are mutually exclusive.",
                 linter.set_option("jobs", 1)
             elif linter.config.jobs == 0:
                 linter.config.jobs = _cpu_count()
+
+        if linter.config.jobs < 1:
+            linter.set_option("jobs", 1)
 
         if self._output:
             try:
