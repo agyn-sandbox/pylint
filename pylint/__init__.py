@@ -77,6 +77,21 @@ def run_symilar(argv: Sequence[str] | None = None) -> NoReturn:
     SimilarRun(argv or sys.argv[1:])
 
 
+def _normalize_path(value: str) -> str:
+    normalized = os.path.abspath(value)
+    normalized = os.path.normpath(normalized)
+    normalized = os.path.realpath(normalized)
+    if os.name == "nt":
+        normalized = os.path.normcase(normalized)
+    return normalized
+
+
+def _is_cwd_entry(entry: str, normalized_cwd: str) -> bool:
+    if entry in {"", "."}:
+        return True
+    return _normalize_path(entry) == normalized_cwd
+
+
 def modify_sys_path() -> None:
     """Modify sys path for execution as Python module.
 
@@ -86,7 +101,7 @@ def modify_sys_path() -> None:
     stdlib or pylint's own modules.
     CPython issue: https://bugs.python.org/issue33053
 
-    - Remove the first entry. This will always be either "" or the working directory
+    - Remove the first entry if it is "", ".", or the working directory
     - Remove the working directory from the second and third entries
       if PYTHONPATH includes a ":" at the beginning or the end.
       https://github.com/PyCQA/pylint/issues/3636
@@ -96,9 +111,11 @@ def modify_sys_path() -> None:
       if pylint is installed in an editable configuration (as the last item).
       https://github.com/PyCQA/pylint/issues/4161
     """
-    sys.path.pop(0)
-    env_pythonpath = os.environ.get("PYTHONPATH", "")
     cwd = os.getcwd()
+    normalized_cwd = _normalize_path(cwd)
+    if _is_cwd_entry(sys.path[0], normalized_cwd):
+        sys.path.pop(0)
+    env_pythonpath = os.environ.get("PYTHONPATH", "")
     if env_pythonpath.startswith(":") and env_pythonpath not in (f":{cwd}", ":."):
         sys.path.pop(0)
     elif env_pythonpath.endswith(":") and env_pythonpath not in (f"{cwd}:", ".:"):
