@@ -117,9 +117,11 @@ def modify_sys_path() -> None:
         sys.path.pop(0)
     env_pythonpath = os.environ.get("PYTHONPATH", "")
     if env_pythonpath.startswith(":") and env_pythonpath not in (f":{cwd}", ":."):
-        sys.path.pop(0)
+        if sys.path and _is_cwd_entry(sys.path[0], normalized_cwd):
+            sys.path.pop(0)
     elif env_pythonpath.endswith(":") and env_pythonpath not in (f"{cwd}:", ".:"):
-        sys.path.pop(1)
+        if len(sys.path) > 1 and _is_cwd_entry(sys.path[1], normalized_cwd):
+            sys.path.pop(1)
 
 
 version = __version__
