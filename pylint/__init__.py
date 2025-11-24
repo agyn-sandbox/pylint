@@ -86,7 +86,17 @@ def modify_sys_path() -> None:
     stdlib or pylint's own modules.
     CPython issue: https://bugs.python.org/issue33053
 
-    - Remove the first entry. This will always be either "" or the working directory
+    Intent and rules for removal:
+    - Remove the first entry only if it represents the current working directory.
+      Specifically if it is one of: empty string "", dot ".", or equals
+      os.getcwd() after normalization.
+      Normalization rules:
+        * Use os.path.abspath + os.path.normpath on all platforms.
+        * On Windows, also apply os.path.normcase to compare case-insensitively.
+        * Prefer os.path.realpath to resolve symlinks when available.
+      This ensures we do not unintentionally drop a user-supplied sys.path[0]
+      (e.g., a plugin directory) when pylint is executed via runpy.
+
     - Remove the working directory from the second and third entries
       if PYTHONPATH includes a ":" at the beginning or the end.
       https://github.com/PyCQA/pylint/issues/3636
@@ -96,13 +106,55 @@ def modify_sys_path() -> None:
       if pylint is installed in an editable configuration (as the last item).
       https://github.com/PyCQA/pylint/issues/4161
     """
-    sys.path.pop(0)
+    def _normalize(p: str) -> str:
+        """Normalize paths for robust cross-platform comparison.
+
+        - abspath + normpath on all platforms
+        - normcase on Windows (case-insensitive filesystem)
+        - realpath to resolve symlinks when possible
+        """
+        try:
+            np = os.path.abspath(p)
+        except Exception:
+            np = p
+        try:
+            np = os.path.normpath(np)
+        except Exception:
+            # keep original if normpath fails for any reason
+            pass
+        if os.name == "nt":
+            try:
+                np = os.path.normcase(np)
+            except Exception:
+                pass
+        try:
+            np = os.path.realpath(np)
+        except Exception:
+            pass
+        return np
+
+    def _is_cwd_entry(entry: str, cwd: str) -> bool:
+        # Treat empty string and dot as cwd
+        if entry in ("", "."):
+            return True
+        return _normalize(entry) == _normalize(cwd)
+
     env_pythonpath = os.environ.get("PYTHONPATH", "")
     cwd = os.getcwd()
-    if env_pythonpath.startswith(":") and env_pythonpath not in (f":{cwd}", ":."):
+
+    # Conditionally remove sys.path[0] only if it's the working directory
+    if sys.path and _is_cwd_entry(sys.path[0], cwd):
         sys.path.pop(0)
+
+    # Handle duplicates introduced by PYTHONPATH leading/trailing ':'
+    if env_pythonpath.startswith(":") and env_pythonpath not in (f":{cwd}", ":."):
+        # Remove next cwd entry at position 0, if present
+        if sys.path and _is_cwd_entry(sys.path[0], cwd):
+            sys.path.pop(0)
     elif env_pythonpath.endswith(":") and env_pythonpath not in (f"{cwd}:", ".:"):
-        sys.path.pop(1)
+        # Remove next cwd entry at position 1, if present
+        if len(sys.path) > 1 and _is_cwd_entry(sys.path[1], cwd):
+            sys.path.pop(1)
 
 
 version = __version__
