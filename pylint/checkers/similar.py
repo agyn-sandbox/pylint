@@ -833,10 +833,10 @@ class SimilarChecker(BaseChecker, Similar, MapReduceMixin):
 
     def close(self):
         """compute and display similarities on closing (i.e. end of parsing)"""
-        total = sum(len(lineset) for lineset in self.linesets)
         # Treat a threshold of 0 as disabling duplicate-code detection entirely.
         if self.min_lines == 0:
             return
+        total = sum(len(lineset) for lineset in self.linesets)
         duplicated = 0
         stats = self.stats
         for num, couples in self._compute_sims():
