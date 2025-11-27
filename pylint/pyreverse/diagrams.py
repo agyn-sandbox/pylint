@@ -91,9 +91,37 @@ class ClassDiagram(Figure, FilterMixIn):
         ):
             if not self.show_attr(node_name):
                 continue
-            names = self.class_names(associated_nodes)
-            if names:
-                node_name = "{} : {}".format(node_name, ", ".join(names))
+            if isinstance(associated_nodes, (list, tuple, set)):
+                nodes = associated_nodes
+            else:
+                nodes = [associated_nodes]
+            display_names = []
+            non_builtin_names = []
+            for value in nodes:
+                origin = value
+                if isinstance(origin, astroid.Instance):
+                    origin = origin._proxied
+                if (
+                    isinstance(origin, astroid.ClassDef)
+                    and hasattr(origin, "name")
+                    and not self.has_node(origin)
+                    and origin.name not in display_names
+                ):
+                    display_names.append(origin.name)
+                    if origin.root().name != "builtins":
+                        non_builtin_names.append(origin.name)
+            type_label = None
+            if non_builtin_names:
+                type_label = ", ".join(non_builtin_names)
+            else:
+                if node_name in getattr(node, "instance_attrs_type_labels", {}):
+                    type_label = node.instance_attrs_type_labels[node_name]
+                elif node_name in getattr(node, "locals_type_labels", {}):
+                    type_label = node.locals_type_labels[node_name]
+                elif display_names:
+                    type_label = ", ".join(display_names)
+            if type_label:
+                node_name = f"{node_name} : {type_label}"
             attrs.append(node_name)
         return sorted(attrs)
 

@@ -21,6 +21,7 @@ import traceback
 import astroid
 
 from pylint.pyreverse import utils
+from pylint.pyreverse.typelabels import annotation_to_label
 
 
 def _iface_hdlr(_):
@@ -139,6 +140,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
         if hasattr(node, "locals_type"):
             return
         node.locals_type = collections.defaultdict(list)
+        node.locals_type_labels = {}
         node.depends = []
         if self.tag:
             node.uid = self.generate_id()
@@ -153,6 +155,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
         if hasattr(node, "locals_type"):
             return
         node.locals_type = collections.defaultdict(list)
+        node.locals_type_labels = {}
         if self.tag:
             node.uid = self.generate_id()
         # resolve ancestors
@@ -162,6 +165,7 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
             baseobj.specializations = specializations
         # resolve instance attributes
         node.instance_attrs_type = collections.defaultdict(list)
+        node.instance_attrs_type_labels = {}
         for assignattrs in node.instance_attrs.values():
             for assignattr in assignattrs:
                 if not isinstance(assignattr, astroid.Unknown):
@@ -220,6 +224,14 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
             current = frame.locals_type[node.name]
             values = set(node.infer())
             frame.locals_type[node.name] = list(set(current) | values)
+            parent_node = node.parent
+            if (
+                isinstance(frame, astroid.ClassDef)
+                and isinstance(parent_node, astroid.AnnAssign)
+            ):
+                label = annotation_to_label(parent_node.annotation)
+                if label:
+                    frame.locals_type_labels[node.name] = label
         except astroid.InferenceError:
             pass
 
@@ -229,12 +241,23 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
 
         handle instance_attrs_type
         """
+        parent_node = node.parent
+        if isinstance(parent_node, astroid.AnnAssign) and isinstance(
+            node.expr, astroid.Name
+        ):
+            label = annotation_to_label(parent_node.annotation)
+            if label:
+                if node.expr.name == "self":
+                    parent.instance_attrs_type_labels[node.attrname] = label
+                elif node.expr.name == "cls":
+                    parent.locals_type_labels[node.attrname] = label
         try:
             values = set(node.infer())
             current = set(parent.instance_attrs_type[node.attrname])
             parent.instance_attrs_type[node.attrname] = list(current | values)
         except astroid.InferenceError:
             pass
+
 
     def visit_import(self, node):
         """visit an astroid.Import node
