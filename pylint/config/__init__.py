@@ -36,6 +36,8 @@ import os
 import pickle
 import sys
 
+import appdirs
+
 from pylint.config.configuration_mixin import ConfigurationMixIn
 from pylint.config.find_default_config_files import find_default_config_files
 from pylint.config.man_help_formatter import _ManHelpFormatter
@@ -55,15 +57,44 @@ __all__ = [
     "UnsupportedAction",
 ]
 
-USER_HOME = os.path.expanduser("~")
-if "PYLINTHOME" in os.environ:
-    PYLINT_HOME = os.environ["PYLINTHOME"]
-    if USER_HOME == "~":
-        USER_HOME = os.path.dirname(PYLINT_HOME)
-elif USER_HOME == "~":
-    PYLINT_HOME = ".pylint.d"
-else:
-    PYLINT_HOME = os.path.join(USER_HOME, ".pylint.d")
+def _resolve_pylint_home():
+    env_home = os.environ.get("PYLINTHOME")
+    if env_home:
+        return env_home
+
+    try:
+        cache_dir = appdirs.user_cache_dir("pylint")
+    except Exception:  # pylint: disable=broad-except
+        cache_dir = ""
+
+    if cache_dir:
+        cache_dir = os.path.abspath(cache_dir)
+        if os.path.isabs(cache_dir):
+            return cache_dir
+
+    return ".pylint.d"
+
+
+def _legacy_pylint_homes(current_home):
+    homes = []
+    user_home = os.path.expanduser("~")
+    if user_home != "~":
+        homes.append(os.path.join(user_home, ".pylint.d"))
+    homes.append(os.path.join(os.getcwd(), ".pylint.d"))
+
+    current_normalized = os.path.abspath(current_home)
+    seen = set()
+    legacy_homes = []
+    for home in homes:
+        normalized = os.path.abspath(home)
+        if normalized == current_normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        legacy_homes.append(home)
+    return legacy_homes
+
+
+PYLINT_HOME = _resolve_pylint_home()
 
 
 def _get_pdata_path(base_name, recurs):
@@ -76,16 +107,34 @@ def load_results(base):
     try:
         with open(data_file, "rb") as stream:
             return pickle.load(stream)
+    except FileNotFoundError:
+        pass
     except Exception:  # pylint: disable=broad-except
         return {}
 
+    if "PYLINTHOME" in os.environ:
+        return {}
+
+    legacy_base = base.replace(os.sep, "_")
+    for legacy_home in _legacy_pylint_homes(PYLINT_HOME):
+        legacy_file = os.path.join(legacy_home, f"{legacy_base}1.stats")
+        try:
+            with open(legacy_file, "rb") as stream:
+                return pickle.load(stream)
+        except FileNotFoundError:
+            continue
+        except Exception:  # pylint: disable=broad-except
+            return {}
+
+    return {}
+
 
 def save_results(results, base):
-    if not os.path.exists(PYLINT_HOME):
-        try:
-            os.mkdir(PYLINT_HOME)
-        except OSError:
-            print("Unable to create directory %s" % PYLINT_HOME, file=sys.stderr)
+    try:
+        os.makedirs(PYLINT_HOME, exist_ok=True)
+    except OSError:
+        print("Unable to create directory %s" % PYLINT_HOME, file=sys.stderr)
+        return
     data_file = _get_pdata_path(base, 1)
     try:
         with open(data_file, "wb") as stream:
@@ -110,8 +159,9 @@ ENV_HELP = (
 The following environment variables are used:
     * PYLINTHOME
     Path to the directory where persistent data for the run will be stored. If
-not found, it defaults to ~/.pylint.d/ or .pylint.d (in the current working
-directory).
+not found, it defaults to the user cache directory reported by the operating
+system (for instance ~/.cache/pylint). If this location cannot be resolved,
+Pylint stores data in ./.pylint.d.
     * PYLINTRC
     Path to the configuration file. See the documentation for the method used
 to search for configuration file.
