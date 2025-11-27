@@ -36,6 +36,7 @@
 # pylint: disable=redefined-outer-name
 
 import os
+import pickle
 import re
 import sys
 import tempfile
@@ -626,27 +627,106 @@ def pop_pylintrc():
 
 
 @pytest.mark.usefixtures("pop_pylintrc")
-def test_pylint_home():
-    uhome = os.path.expanduser("~")
-    if uhome == "~":
-        expected = ".pylint.d"
-    else:
-        expected = os.path.join(uhome, ".pylint.d")
-    assert config.PYLINT_HOME == expected
+def test_pylint_home(monkeypatch):
+    cache_dir = os.path.join(tempfile.gettempdir(), "pylint-cache")
+    monkeypatch.delenv("PYLINTHOME", raising=False)
+    monkeypatch.setattr(
+        config.appdirs,
+        "user_cache_dir",
+        lambda *args, **kwargs: cache_dir,
+    )
+    try:
+        reload(config)
+        assert config.PYLINT_HOME == os.path.abspath(cache_dir)
+
+        pylintd = join(tempfile.gettempdir(), ".pylint.d")
+        monkeypatch.setenv("PYLINTHOME", pylintd)
+        reload(config)
+        assert config.PYLINT_HOME == pylintd
+    finally:
+        monkeypatch.undo()
+        reload(config)
+
+
+@pytest.mark.usefixtures("pop_pylintrc")
+def test_legacy_fallback_read_then_write_to_new(monkeypatch, tmp_path):
+    base = "legacy"
+    cache_dir = tmp_path / "cache"
+    legacy_root = tmp_path / "legacy-home"
+    legacy_home = legacy_root / ".pylint.d"
+    legacy_home.mkdir(parents=True)
+    stats_path = legacy_home / f"{base}1.stats"
+    with stats_path.open("wb") as stream:
+        pickle.dump({"legacy": True}, stream)
+
+    monkeypatch.delenv("PYLINTHOME", raising=False)
+    monkeypatch.setenv(HOME, str(legacy_root))
+    monkeypatch.setattr(
+        config.appdirs,
+        "user_cache_dir",
+        lambda *args, **kwargs: str(cache_dir),
+    )
 
     try:
-        pylintd = join(tempfile.gettempdir(), ".pylint.d")
-        os.environ["PYLINTHOME"] = pylintd
-        try:
-            reload(config)
-            assert config.PYLINT_HOME == pylintd
-        finally:
-            try:
-                os.remove(pylintd)
-            except FileNotFoundError:
-                pass
+        reload(config)
+
+        assert config.PYLINT_HOME == os.path.abspath(str(cache_dir))
+        data = config.load_results(base)
+        assert data == {"legacy": True}
+
+        updated = {"legacy": False}
+        config.save_results(updated, base)
+
+        new_file = cache_dir / f"{base}1.stats"
+        assert new_file.exists()
+        with new_file.open("rb") as stream:
+            assert pickle.load(stream) == updated
+        with stats_path.open("rb") as stream:
+            assert pickle.load(stream) == {"legacy": True}
     finally:
-        del os.environ["PYLINTHOME"]
+        monkeypatch.undo()
+        reload(config)
+
+
+@pytest.mark.usefixtures("pop_pylintrc")
+def test_pylinthome_override_exclusive(monkeypatch, tmp_path):
+    base = "override"
+    explicit_home = tmp_path / "explicit"
+    explicit_home.mkdir()
+    cache_dir = tmp_path / "cache"
+    legacy_root = tmp_path / "legacy"
+    legacy_home = legacy_root / ".pylint.d"
+    legacy_home.mkdir(parents=True)
+    legacy_file = legacy_home / f"{base}1.stats"
+    with legacy_file.open("wb") as stream:
+        pickle.dump({"legacy": True}, stream)
+
+    monkeypatch.setenv("PYLINTHOME", str(explicit_home))
+    monkeypatch.setenv(HOME, str(legacy_root))
+    monkeypatch.setattr(
+        config.appdirs,
+        "user_cache_dir",
+        lambda *args, **kwargs: str(cache_dir),
+    )
+
+    try:
+        reload(config)
+
+        assert config.PYLINT_HOME == str(explicit_home)
+        assert config.load_results(base) == {}
+
+        updated = {"legacy": False}
+        config.save_results(updated, base)
+
+        new_file = explicit_home / f"{base}1.stats"
+        assert new_file.exists()
+        with new_file.open("rb") as stream:
+            assert pickle.load(stream) == updated
+        with legacy_file.open("rb") as stream:
+            assert pickle.load(stream) == {"legacy": True}
+    finally:
+        monkeypatch.undo()
+        reload(config)
 
 
 @pytest.mark.usefixtures("pop_pylintrc")

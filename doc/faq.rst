@@ -93,10 +93,15 @@ localized using the following rules:
 
 * value of the PYLINTHOME environment variable if set
 
-* ".pylint.d" subdirectory of the user's home directory if it is found
-	(not always findable on Windows platforms)
+* a platform-specific cache directory, following the XDG Base Directory
+  specification (for instance ``~/.cache/pylint`` on Linux)
 
-* ".pylint.d" directory in the current directory
+* ``.pylint.d`` directory in the current working directory if the cache
+  directory cannot be resolved
+
+When migrating from older versions, Pylint continues to read existing
+statistics from ``~/.pylint.d`` or ``./.pylint.d`` when ``PYLINTHOME`` is not
+explicitly set, but new data is written to the cache directory above.
 
 3.3 How do I find the option name (for pylintrc) corresponding to a specific command line option?
 --------------------------------------------------------------------------------------------------------
