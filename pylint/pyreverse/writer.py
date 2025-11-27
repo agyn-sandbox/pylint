@@ -17,10 +17,77 @@
 """Utilities for creating VCG and Dot diagrams"""
 
 import os
+from itertools import zip_longest
 
 from pylint.graph import DotBackend
+from pylint.pyreverse.typelabels import annotation_to_label
 from pylint.pyreverse.utils import is_exception
 from pylint.pyreverse.vcgutils import VCGPrinter
+
+
+def _format_parameter(name: str, annotation) -> str:
+    label = annotation_to_label(annotation)
+    if label:
+        return f"{name}: {label}"
+    return name
+
+
+def _format_parameters(func) -> str:
+    args = func.args
+    skip_name = None
+    if func.type == "method":
+        skip_name = "self"
+    elif func.type == "classmethod":
+        skip_name = "cls"
+
+    parameters = []
+    positional_nodes = list(getattr(args, "posonlyargs", [])) + list(args.args)
+    positional_annotations = list(
+        getattr(args, "posonlyargs_annotations", [])
+    ) + list(getattr(args, "annotations", []))
+
+    skipped = False
+    for node, annotation in zip_longest(
+        positional_nodes, positional_annotations, fillvalue=None
+    ):
+        if node is None:
+            continue
+        if skip_name and not skipped and node.name == skip_name:
+            skipped = True
+            continue
+        parameters.append(_format_parameter(node.name, annotation))
+
+    if args.vararg:
+        parameters.append(
+            _format_parameter(f"*{args.vararg}", getattr(args, "varargannotation", None))
+        )
+
+    for node, annotation in zip_longest(
+        getattr(args, "kwonlyargs", []),
+        getattr(args, "kwonlyargs_annotations", []),
+        fillvalue=None,
+    ):
+        if node is None:
+            continue
+        parameters.append(_format_parameter(node.name, annotation))
+
+    if args.kwarg:
+        parameters.append(
+            _format_parameter(
+                f"**{args.kwarg}", getattr(args, "kwargannotation", None)
+            )
+        )
+
+    return ", ".join(filter(None, parameters))
+
+
+def _method_signature(func) -> str:
+    params = _format_parameters(func)
+    signature = f"{func.name}({params})"
+    return_label = annotation_to_label(func.returns)
+    if return_label:
+        signature = f"{signature} -> {return_label}"
+    return signature
 
 
 class DiagramWriter:
@@ -134,11 +201,7 @@ class DotWriter(DiagramWriter):
         if not self.config.only_classnames:
             label = r"{}|{}\l|".format(label, r"\l".join(obj.attrs))
             for func in obj.methods:
-                if func.args.args:
-                    args = [arg.name for arg in func.args.args if arg.name != "self"]
-                else:
-                    args = []
-                label = r"{}{}({})\l".format(label, func.name, ", ".join(args))
+                label = r"{}{}\l".format(label, _method_signature(func))
             label = "{%s}" % label
         if is_exception(obj.node):
             return dict(fontcolor="red", label=label, shape="record")
@@ -199,17 +262,18 @@ class VCGWriter(DiagramWriter):
             shape = "box"
         if not self.config.only_classnames:
             attrs = obj.attrs
-            methods = [func.name for func in obj.methods]
+            methods = [_method_signature(func) for func in obj.methods]
             # box width for UML like diagram
-            maxlen = max(len(name) for name in [obj.title] + methods + attrs)
+            width_candidates = [obj.title] + attrs + methods
+            maxlen = max(len(name) for name in width_candidates)
             line = "_" * (maxlen + 2)
             label = fr"{label}\n\f{line}"
             for attr in attrs:
                 label = fr"{label}\n\f08{attr}"
             if attrs:
                 label = fr"{label}\n\f{line}"
-            for func in methods:
-                label = fr"{label}\n\f10{func}()"
+            for method in methods:
+                label = fr"{label}\n\f10{method}"
         return dict(label=label, shape=shape)
 
     def close_graph(self):
