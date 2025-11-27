@@ -1238,3 +1238,11 @@ class TestRunTC:
             output_file,
             expected_output=expected,
         )
+
+    def test_duplicate_code_disabled_with_zero(self) -> None:
+        path = join(HERE, "regrtest_data", "duplicate_data_raw_strings")
+        out = StringIO()
+        self._run_pylint([path, "--disable=all", "--enable=duplicate-code", "--min-similarity-lines=0"], out=out, reporter=TextReporter(out))
+        actual_output = self._clean_paths(out.getvalue())
+        assert "Similar lines in" not in actual_output
+        assert "R0801" not in actual_output

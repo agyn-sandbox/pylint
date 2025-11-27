@@ -739,7 +739,10 @@ class SimilarChecker(BaseChecker, Similar, MapReduceMixin):
                 "default": DEFAULT_MIN_SIMILARITY_LINE,
                 "type": "int",
                 "metavar": "<int>",
-                "help": "Minimum lines number of a similarity.",
+                "help": (
+                    "Minimum number of successive lines to consider a similarity; "
+                    "set to 0 to disable duplicate-code detection."
+                ),
             },
         ),
         (
@@ -831,6 +834,9 @@ class SimilarChecker(BaseChecker, Similar, MapReduceMixin):
     def close(self):
         """compute and display similarities on closing (i.e. end of parsing)"""
         total = sum(len(lineset) for lineset in self.linesets)
+        # Treat a threshold of 0 as disabling duplicate-code detection entirely.
+        if self.min_lines == 0:
+            return
         duplicated = 0
         stats = self.stats
         for num, couples in self._compute_sims():
