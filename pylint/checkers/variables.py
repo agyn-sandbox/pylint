@@ -54,6 +54,7 @@ import itertools
 import os
 import re
 from functools import lru_cache
+from typing import List
 
 import astroid
 
@@ -1820,10 +1821,40 @@ class VariablesChecker(BaseChecker):
                 return True
         return False
 
+    def _extract_attribute_prefixes(self, attr: astroid.Attribute) -> List[str]:
+        """Return dotted prefixes for a chained attribute."""
+
+        prefixes: List[str] = []
+        components: List[str] = []
+        current = attr
+        while isinstance(current, astroid.Attribute):
+            components.append(current.attrname)
+            current = current.expr
+        if not isinstance(current, astroid.Name):
+            return prefixes
+
+        components.append(current.name)
+        components.reverse()
+        if not components:
+            return prefixes
+
+        running = components[0]
+        prefixes.append(running)
+        for component in components[1:-1]:
+            running = f"{running}.{component}"
+            prefixes.append(running)
+        return prefixes
+
     def _store_type_annotation_node(self, type_annotation):
         """Given a type annotation, store all the name nodes it refers to"""
         if isinstance(type_annotation, astroid.Name):
             self._type_annotation_names.append(type_annotation.name)
+            return
+
+        if isinstance(type_annotation, astroid.Attribute):
+            self._type_annotation_names.extend(
+                self._extract_attribute_prefixes(type_annotation)
+            )
             return
 
         if not isinstance(type_annotation, astroid.Subscript):
@@ -1835,12 +1866,15 @@ class VariablesChecker(BaseChecker):
             and type_annotation.value.expr.name == TYPING_MODULE
         ):
             self._type_annotation_names.append(TYPING_MODULE)
-            return
 
         self._type_annotation_names.extend(
             annotation.name
             for annotation in type_annotation.nodes_of_class(astroid.Name)
         )
+        for attribute in type_annotation.nodes_of_class(astroid.Attribute):
+            self._type_annotation_names.extend(
+                self._extract_attribute_prefixes(attribute)
+            )
 
     def _store_type_annotation_names(self, node):
         type_annotation = node.type_annotation
