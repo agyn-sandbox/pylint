@@ -1426,7 +1426,7 @@ class TestCallbackOptions:
             assert run.verbose
 
         with pytest.raises(SystemExit):
-            run = Run(["--verbose=True"])
+            run = Run(["-v"])
             assert run.verbose
 
     @staticmethod
