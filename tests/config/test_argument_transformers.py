@@ -37,6 +37,13 @@ def test_regexp_csv_comma_inside_character_class() -> None:
     assert patterns[0].pattern == "prefix[a,b]suffix"
 
 
+def test_regexp_csv_character_class_with_leading_closing_bracket() -> None:
+    patterns = _regexp_csv_transfomer("[],]")
+
+    assert len(patterns) == 1
+    assert patterns[0].pattern == "[],]"
+
+
 def test_regexp_csv_escaped_comma() -> None:
     patterns = _regexp_csv_transfomer(r"foo\,,bar")
 

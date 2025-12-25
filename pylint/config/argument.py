@@ -111,18 +111,71 @@ def _regex_transformer(value: str) -> Pattern[str]:
         raise argparse.ArgumentTypeError(msg) from e
 
 
+class _CharClassTracker:
+    """Track character class parsing state for regex CSV splitting."""
+
+    def __init__(self) -> None:
+        self.active = False
+        self.position = 0
+        self.first_char: str | None = None
+
+    def try_enter(self, char: str, buffer: list[str]) -> bool:
+        if char == "[" and not self.active:
+            self.active = True
+            self.position = 0
+            self.first_char = None
+            buffer.append(char)
+            return True
+        return False
+
+    def record_literal(self, char: str) -> None:
+        if not self.active:
+            return
+        if self.position == 0:
+            self.first_char = char
+        self.position += 1
+
+    def consume(self, char: str, buffer: list[str]) -> bool:
+        if not self.active:
+            return False
+        if char == "]":
+            if self.position == 0 or (
+                self.position == 1 and self.first_char == "^"
+            ):
+                buffer.append(char)
+                self.record_literal(char)
+                return True
+            buffer.append(char)
+            self.active = False
+            self.position = 0
+            self.first_char = None
+            return True
+        buffer.append(char)
+        self.record_literal(char)
+        return True
+
+    def ensure_closed(self, value: str) -> None:
+        if self.active:
+            raise argparse.ArgumentTypeError(
+                "Error in provided regular expression: "
+                f"{value} contains an unterminated character class"
+            )
+
+
 def _split_regex_csv(value: str) -> Sequence[str]:
     """Split ``value`` on commas outside character classes and braces."""
     parts: list[str] = []
     buffer: list[str] = []
-    in_char_class = False
-    brace_stack: list[bool] = []
+    char_class = _CharClassTracker()
+    brace_depth = 0
     escaped = False
 
     for char in value:
         if escaped:
             buffer.append(char)
             escaped = False
+            if char_class.active:
+                char_class.record_literal(char)
             continue
 
         if char == "\\":
@@ -130,34 +183,29 @@ def _split_regex_csv(value: str) -> Sequence[str]:
             escaped = True
             continue
 
-        if char == "[" and not in_char_class:
-            in_char_class = True
+        if char_class.try_enter(char, buffer):
+            continue
+
+        if char_class.consume(char, buffer):
+            continue
+
+        if char == "{" and not char_class.active:
+            brace_depth += 1
             buffer.append(char)
             continue
 
-        if char == "]" and in_char_class:
-            in_char_class = False
+        if char == "}" and not char_class.active and brace_depth > 0:
+            brace_depth -= 1
             buffer.append(char)
             continue
 
-        if char == "{" and not in_char_class:
-            brace_stack.append(False)
-            buffer.append(char)
-            continue
-
-        if char == "}" and not in_char_class and brace_stack:
-            brace_stack.pop()
-            buffer.append(char)
-            continue
-
-        if char == "," and not in_char_class:
-            if not brace_stack:
+        if char == "," and not char_class.active:
+            if brace_depth == 0:
                 segment = "".join(buffer).strip()
                 if segment:
                     parts.append(segment)
                 buffer.clear()
                 continue
-            brace_stack[-1] = True
 
         buffer.append(char)
 
@@ -165,11 +213,9 @@ def _split_regex_csv(value: str) -> Sequence[str]:
     if segment:
         parts.append(segment)
 
-    if in_char_class:
-        raise argparse.ArgumentTypeError(
-            f"Error in provided regular expression: {value} contains an unterminated character class"
-        )
-    if brace_stack and any(brace_stack):
+    char_class.ensure_closed(value)
+
+    if brace_depth:
         raise argparse.ArgumentTypeError(
             f"Error in provided regular expression: {value} contains unbalanced braces"
         )
@@ -551,7 +597,7 @@ class _CallableArgument(_Argument):
         kwargs: dict[str, Any],
         hide_help: bool,
         section: str | None,
-        metavar: str,
+        metavar: str | None = None,
     ) -> None:
         super().__init__(
             flags=flags, arg_help=arg_help, hide_help=hide_help, section=section
