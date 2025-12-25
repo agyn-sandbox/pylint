@@ -815,6 +815,101 @@ a.py:1:4: E0001: Parsing failed: 'invalid syntax (<unknown>, line 1)' (syntax-er
             assert sys.path == paths[1:]
 
     @pytest.mark.parametrize(
+        ("entry_key", "expect_removed"),
+        [
+            ("temp_dir", False),
+            ("__EMPTY__", True),
+            ("__DOT__", True),
+            ("__CWD__", True),
+        ],
+        ids=["temp-dir", "empty-string", "dot", "cwd"],
+    )
+    def test_modify_sys_path_via_runpy(
+        self, tmp_path: Path, entry_key: str, expect_removed: bool
+    ) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        env = os.environ.copy()
+        if entry_key == "temp_dir":
+            first_entry = tmp_path / "vendor"
+            first_entry.mkdir()
+            env_entry = str(first_entry)
+        else:
+            env_entry = entry_key
+        env["PYLINT_SYS_PATH_ENTRY"] = env_entry
+        script = textwrap.dedent(
+            """
+            import json
+            import os
+            import runpy
+            import sys
+            from contextlib import redirect_stdout, redirect_stderr
+            from io import StringIO
+
+
+            def _normalize(candidate: str) -> str:
+                return os.path.normcase(os.path.realpath(os.path.abspath(candidate)))
+
+
+            entry_key = os.environ["PYLINT_SYS_PATH_ENTRY"]
+            if entry_key == "__EMPTY__":
+                entry_value = ""
+            elif entry_key == "__DOT__":
+                entry_value = "."
+            elif entry_key == "__CWD__":
+                entry_value = os.getcwd()
+            else:
+                entry_value = entry_key
+
+            baseline_normalized = [_normalize(p or ".") for p in sys.path]
+
+            sys.path.insert(0, entry_value)
+            pre_normalized = [_normalize(p or ".") for p in sys.path]
+
+            sys.argv = ["pylint", "--help"]
+            buffer = StringIO()
+            with redirect_stdout(buffer), redirect_stderr(buffer):
+                try:
+                    runpy.run_module("pylint", run_name="__main__", alter_sys=True)
+                except SystemExit:
+                    pass
+
+            post_normalized = [_normalize(p or ".") for p in sys.path]
+
+            inserted_normalized = _normalize(entry_value or ".")
+            payload = {
+                "inserted_normalized": inserted_normalized,
+                "baseline_count": baseline_normalized.count(inserted_normalized),
+                "pre_count": pre_normalized.count(inserted_normalized),
+                "post_count": post_normalized.count(inserted_normalized),
+                "cwd": _normalize(os.getcwd()),
+            }
+            print(json.dumps(payload))
+            """
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=env,
+            cwd=str(repo_root),
+        )
+        stdout = proc.stdout.strip()
+        assert stdout, "subprocess produced no JSON output"
+        payload = json.loads(stdout)
+        inserted_normalized = payload["inserted_normalized"]
+        baseline_count = payload["baseline_count"]
+        pre_count = payload["pre_count"]
+        post_count = payload["post_count"]
+        assert pre_count == baseline_count + 1
+        if expect_removed:
+            assert post_count == baseline_count
+            assert inserted_normalized == payload["cwd"]
+        else:
+            assert post_count == baseline_count + 1
+            assert inserted_normalized != payload["cwd"]
+
+    @pytest.mark.parametrize(
         "args",
         [
             ["--disable=import-error,unused-import"],
