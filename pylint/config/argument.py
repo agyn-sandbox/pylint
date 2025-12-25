@@ -118,21 +118,24 @@ class _CharClassTracker:
         self.active = False
         self.position = 0
         self.first_char: str | None = None
+        self.first_char_escaped = False
 
     def try_enter(self, char: str, buffer: list[str]) -> bool:
         if char == "[" and not self.active:
             self.active = True
             self.position = 0
             self.first_char = None
+            self.first_char_escaped = False
             buffer.append(char)
             return True
         return False
 
-    def record_literal(self, char: str) -> None:
+    def record_literal(self, char: str, *, escaped: bool) -> None:
         if not self.active:
             return
         if self.position == 0:
             self.first_char = char
+            self.first_char_escaped = escaped
         self.position += 1
 
     def consume(self, char: str, buffer: list[str]) -> bool:
@@ -140,18 +143,21 @@ class _CharClassTracker:
             return False
         if char == "]":
             if self.position == 0 or (
-                self.position == 1 and self.first_char == "^"
+                self.position == 1
+                and self.first_char == "^"
+                and not self.first_char_escaped
             ):
                 buffer.append(char)
-                self.record_literal(char)
+                self.record_literal(char, escaped=False)
                 return True
             buffer.append(char)
             self.active = False
             self.position = 0
             self.first_char = None
+            self.first_char_escaped = False
             return True
         buffer.append(char)
-        self.record_literal(char)
+        self.record_literal(char, escaped=False)
         return True
 
     def ensure_closed(self, value: str) -> None:
@@ -175,7 +181,7 @@ def _split_regex_csv(value: str) -> Sequence[str]:
             buffer.append(char)
             escaped = False
             if char_class.active:
-                char_class.record_literal(char)
+                char_class.record_literal(char, escaped=True)
             continue
 
         if char == "\\":
