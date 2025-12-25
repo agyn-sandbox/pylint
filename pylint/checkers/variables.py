@@ -1675,6 +1675,11 @@ class VariablesChecker(BaseChecker):
                 if import_names:
                     qname, asname = import_names
                     name = asname or qname
+                    if (
+                        qname in self._type_annotation_names
+                        or (asname and asname in self._type_annotation_names)
+                    ):
+                        return
 
             if _has_locals_call_after_node(stmt, node.scope()):
                 message_name = "possibly-unused-variable"
@@ -1826,16 +1831,16 @@ class VariablesChecker(BaseChecker):
             self._type_annotation_names.append(type_annotation.name)
             return
 
-        if not isinstance(type_annotation, astroid.Subscript):
+        if not isinstance(type_annotation, astroid.node_classes.NodeNG):
             return
 
         if (
-            isinstance(type_annotation.value, astroid.Attribute)
+            isinstance(type_annotation, astroid.Subscript)
+            and isinstance(type_annotation.value, astroid.Attribute)
             and isinstance(type_annotation.value.expr, astroid.Name)
             and type_annotation.value.expr.name == TYPING_MODULE
         ):
             self._type_annotation_names.append(TYPING_MODULE)
-            return
 
         self._type_annotation_names.extend(
             annotation.name
