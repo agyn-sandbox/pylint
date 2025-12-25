@@ -904,6 +904,24 @@ def test_recursive_ignores_package_subdirectories(tmp_path: Path) -> None:
     assert (ignored_dir / "z.py").resolve() not in linted_paths
 
 
+def test_recursive_ignore_respects_parent_named_tmp(tmp_path: Path) -> None:
+    outer_tmp = tmp_path / "tmp"
+    project = outer_tmp / "project"
+    outer_tmp.mkdir()
+    project.mkdir()
+    (project / "root_file.py").write_text("x = 1\n", encoding="utf-8")
+    nested_tmp = project / "tmp"
+    nested_tmp.mkdir()
+    (nested_tmp / "ignored.py").write_text("x = 1\n", encoding="utf-8")
+
+    linter = _create_recursive_linter_for_test(ignore=["tmp"])
+    linter.check([str(project)])
+
+    linted_paths = {Path(msg.path).resolve() for msg in linter.reporter.messages}
+    assert (project / "root_file.py").resolve() in linted_paths
+    assert (nested_tmp / "ignored.py").resolve() not in linted_paths
+
+
 # we do the check with jobs=1 as well, so that we are sure that the duplicates
 # are created by the multiprocessing problem.
 @pytest.mark.needs_two_cores
