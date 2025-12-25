@@ -111,10 +111,80 @@ def _regex_transformer(value: str) -> Pattern[str]:
         raise argparse.ArgumentTypeError(msg) from e
 
 
+def _split_regex_csv(value: str) -> Sequence[str]:
+    """Split ``value`` on commas outside character classes and braces."""
+    parts: list[str] = []
+    buffer: list[str] = []
+    in_char_class = False
+    brace_stack: list[bool] = []
+    escaped = False
+
+    for char in value:
+        if escaped:
+            buffer.append(char)
+            escaped = False
+            continue
+
+        if char == "\\":
+            buffer.append(char)
+            escaped = True
+            continue
+
+        if char == "[" and not in_char_class:
+            in_char_class = True
+            buffer.append(char)
+            continue
+
+        if char == "]" and in_char_class:
+            in_char_class = False
+            buffer.append(char)
+            continue
+
+        if char == "{" and not in_char_class:
+            brace_stack.append(False)
+            buffer.append(char)
+            continue
+
+        if char == "}" and not in_char_class and brace_stack:
+            brace_stack.pop()
+            buffer.append(char)
+            continue
+
+        if char == "," and not in_char_class:
+            if not brace_stack:
+                segment = "".join(buffer).strip()
+                if segment:
+                    parts.append(segment)
+                buffer.clear()
+                continue
+            brace_stack[-1] = True
+
+        buffer.append(char)
+
+    segment = "".join(buffer).strip()
+    if segment:
+        parts.append(segment)
+
+    if in_char_class:
+        raise argparse.ArgumentTypeError(
+            f"Error in provided regular expression: {value} contains an unterminated character class"
+        )
+    if brace_stack and any(brace_stack):
+        raise argparse.ArgumentTypeError(
+            f"Error in provided regular expression: {value} contains unbalanced braces"
+        )
+    if escaped:
+        raise argparse.ArgumentTypeError(
+            f"Error in provided regular expression: {value} has an unfinished escape sequence"
+        )
+
+    return parts
+
+
 def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
     """Transforms a comma separated list of regular expressions."""
     patterns: list[Pattern[str]] = []
-    for pattern in _csv_transformer(value):
+    for pattern in _split_regex_csv(value):
         patterns.append(_regex_transformer(pattern))
     return patterns
 
@@ -122,14 +192,13 @@ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
 def _regexp_paths_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
     """Transforms a comma separated list of regular expressions paths."""
     patterns: list[Pattern[str]] = []
-    for pattern in _csv_transformer(value):
-        patterns.append(
-            re.compile(
-                str(pathlib.PureWindowsPath(pattern)).replace("\\", "\\\\")
-                + "|"
-                + pathlib.PureWindowsPath(pattern).as_posix()
-            )
+    for pattern in _split_regex_csv(value):
+        compiled_pattern = (
+            str(pathlib.PureWindowsPath(pattern)).replace("\\", "\\\\")
+            + "|"
+            + pathlib.PureWindowsPath(pattern).as_posix()
         )
+        patterns.append(_regex_transformer(compiled_pattern))
     return patterns
 
 
