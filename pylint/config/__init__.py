@@ -34,7 +34,13 @@
 
 import os
 import pickle
+import shutil
 import sys
+import warnings
+from pathlib import Path
+from typing import Optional, Type
+
+from platformdirs import user_data_dir
 
 from pylint.config.configuration_mixin import ConfigurationMixIn
 from pylint.config.find_default_config_files import find_default_config_files
@@ -55,40 +61,127 @@ __all__ = [
     "UnsupportedAction",
 ]
 
+LEGACY_DATA_DIR_NAME = ".pylint.d"
+MIGRATION_SENTINEL = ".pylint-legacy-migrated"
+
+
+def _resolve_home() -> Optional[Path]:
+    expanded = Path(os.path.expanduser("~"))
+    if str(expanded) == "~":
+        return None
+    return expanded
+
+
+def _legacy_directory(home_path: Optional[Path]) -> Path:
+    if home_path is None:
+        return Path(LEGACY_DATA_DIR_NAME)
+    return home_path / LEGACY_DATA_DIR_NAME
+
+
+def _warn(message: str, category: Type[Warning] = UserWarning) -> None:
+    warnings.warn(message, category, stacklevel=3)
+
+
+def _prepare_data_directory(target: Path, legacy: Path) -> Path:
+    sentinel = target / MIGRATION_SENTINEL
+
+    if target.exists():
+        if target.is_dir():
+            return target
+        _warn(
+            f"Pylint data path '{target}' exists but is not a directory. "
+            f"Falling back to legacy location '{legacy}'."
+        )
+        legacy.mkdir(parents=True, exist_ok=True)
+        return legacy
+
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        _warn(
+            f"Unable to create Pylint data directory '{target}': {error}. "
+            f"Falling back to legacy location '{legacy}'."
+        )
+        legacy.mkdir(parents=True, exist_ok=True)
+        return legacy
+
+    if legacy.exists() and not sentinel.exists():
+        try:
+            for item in legacy.iterdir():
+                destination = target / item.name
+                if item.is_dir():
+                    shutil.copytree(str(item), str(destination))
+                else:
+                    shutil.copy2(str(item), str(destination))
+        except OSError as error:
+            _warn(
+                f"Unable to migrate data from '{legacy}' to '{target}': {error}. "
+                f"Using legacy directory for this run."
+            )
+            shutil.rmtree(str(target), ignore_errors=True)
+            legacy.mkdir(parents=True, exist_ok=True)
+            return legacy
+        sentinel.touch(exist_ok=True)
+        _warn(
+            f"Pylint persistent data migrated from '{legacy}' to '{target}'."
+        )
+
+    return target
+
+
+def get_pylint_data_dir() -> str:
+    override = os.environ.get("PYLINTHOME")
+    if override:
+        return override
+
+    home_path = _resolve_home()
+    if home_path is None:
+        fallback = Path(LEGACY_DATA_DIR_NAME)
+        fallback.mkdir(parents=True, exist_ok=True)
+        _warn(
+            "HOME directory could not be resolved. Falling back to './.pylint.d'. "
+            "This fallback is deprecated and will be removed in a future release.",
+            DeprecationWarning,
+        )
+        return str(fallback)
+
+    data_directory = Path(user_data_dir(appname="pylint"))
+    legacy_directory = _legacy_directory(home_path)
+    resolved_directory = _prepare_data_directory(data_directory, legacy_directory)
+    return str(resolved_directory)
+
+
 USER_HOME = os.path.expanduser("~")
-if "PYLINTHOME" in os.environ:
-    PYLINT_HOME = os.environ["PYLINTHOME"]
-    if USER_HOME == "~":
-        USER_HOME = os.path.dirname(PYLINT_HOME)
-elif USER_HOME == "~":
-    PYLINT_HOME = ".pylint.d"
-else:
-    PYLINT_HOME = os.path.join(USER_HOME, ".pylint.d")
+PYLINT_HOME = get_pylint_data_dir()
+if "PYLINTHOME" in os.environ and USER_HOME == "~":
+    USER_HOME = os.path.dirname(PYLINT_HOME)
 
 
 def _get_pdata_path(base_name, recurs):
     base_name = base_name.replace(os.sep, "_")
-    return os.path.join(PYLINT_HOME, f"{base_name}{recurs}.stats")
+    return Path(PYLINT_HOME) / f"{base_name}{recurs}.stats"
 
 
 def load_results(base):
     data_file = _get_pdata_path(base, 1)
     try:
-        with open(data_file, "rb") as stream:
+        with data_file.open("rb") as stream:
             return pickle.load(stream)
     except Exception:  # pylint: disable=broad-except
         return {}
 
 
 def save_results(results, base):
-    if not os.path.exists(PYLINT_HOME):
-        try:
-            os.mkdir(PYLINT_HOME)
-        except OSError:
-            print("Unable to create directory %s" % PYLINT_HOME, file=sys.stderr)
+    data_directory = Path(PYLINT_HOME)
+    try:
+        data_directory.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        print(f"Unable to create directory {data_directory}: {error}", file=sys.stderr)
+        return
+
     data_file = _get_pdata_path(base, 1)
     try:
-        with open(data_file, "wb") as stream:
+        with data_file.open("wb") as stream:
             pickle.dump(results, stream)
     except OSError as ex:
         print(f"Unable to create file {data_file}: {ex}", file=sys.stderr)
@@ -110,8 +203,10 @@ ENV_HELP = (
 The following environment variables are used:
     * PYLINTHOME
     Path to the directory where persistent data for the run will be stored. If
-not found, it defaults to ~/.pylint.d/ or .pylint.d (in the current working
-directory).
+unset, Pylint uses the user data directory defined by the operating system via
+the XDG Base Directory specification. Data from the legacy ~/.pylint.d
+directory is migrated automatically. If the home directory cannot be
+determined, the fallback is ./.pylint.d (deprecated).
     * PYLINTRC
     Path to the configuration file. See the documentation for the method used
 to search for configuration file.

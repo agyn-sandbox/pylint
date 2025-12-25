@@ -39,13 +39,16 @@ import os
 import re
 import sys
 import tempfile
+import warnings
 from contextlib import contextmanager
 from importlib import reload
 from io import StringIO
+from pathlib import Path
 from os import chdir, getcwd
 from os.path import abspath, basename, dirname, isdir, join, sep
 from shutil import rmtree
 
+import platformdirs
 import pytest
 
 from pylint import checkers, config, exceptions, interfaces, lint, testutils
@@ -626,27 +629,136 @@ def pop_pylintrc():
 
 
 @pytest.mark.usefixtures("pop_pylintrc")
-def test_pylint_home():
-    uhome = os.path.expanduser("~")
-    if uhome == "~":
-        expected = ".pylint.d"
-    else:
-        expected = os.path.join(uhome, ".pylint.d")
-    assert config.PYLINT_HOME == expected
+def test_pylint_home_env_override(monkeypatch, tmp_path):
+    target = tmp_path / "custom"
+    monkeypatch.setenv("PYLINTHOME", str(target))
+    reload(config)
+    try:
+        assert config.PYLINT_HOME == str(target)
+    finally:
+        monkeypatch.undo()
+        reload(config)
+
+
+@pytest.mark.usefixtures("pop_pylintrc")
+def test_pylint_home_default_uses_platformdirs(monkeypatch, tmp_path):
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    monkeypatch.setenv(HOME, str(home_dir))
+    target_dir = tmp_path / "xdg" / "pylint"
+
+    def fake_user_data_dir(appname, *_args, **_kwargs):
+        assert appname == "pylint"
+        return str(target_dir)
+
+    monkeypatch.setattr(platformdirs, "user_data_dir", fake_user_data_dir)
+    reload(config)
+    try:
+        assert Path(config.PYLINT_HOME) == target_dir
+        assert target_dir.exists()
+    finally:
+        monkeypatch.undo()
+        reload(config)
+
+
+@pytest.mark.usefixtures("pop_pylintrc")
+def test_pylint_home_migrates_legacy_directory(monkeypatch, tmp_path):
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    monkeypatch.setenv(HOME, str(home_dir))
+    legacy_dir = home_dir / ".pylint.d"
+    legacy_dir.mkdir()
+    legacy_file = legacy_dir / "cache.stats"
+    legacy_file.write_text("legacy", encoding="utf-8")
+    target_dir = tmp_path / "xdg" / "pylint"
+
+    def fake_user_data_dir(appname, *_args, **_kwargs):
+        assert appname == "pylint"
+        return str(target_dir)
+
+    monkeypatch.setattr(platformdirs, "user_data_dir", fake_user_data_dir)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        reload(config)
 
     try:
-        pylintd = join(tempfile.gettempdir(), ".pylint.d")
-        os.environ["PYLINTHOME"] = pylintd
-        try:
+        assert Path(config.PYLINT_HOME) == target_dir
+        copied_file = target_dir / legacy_file.name
+        assert copied_file.read_text(encoding="utf-8") == "legacy"
+        sentinel_path = target_dir / config.MIGRATION_SENTINEL
+        assert sentinel_path.is_file()
+        user_warnings = [
+            warning
+            for warning in caught
+            if issubclass(warning.category, UserWarning)
+        ]
+        assert any("migrated" in str(w.message) for w in user_warnings)
+
+        with warnings.catch_warnings(record=True) as second_caught:
+            warnings.simplefilter("always")
             reload(config)
-            assert config.PYLINT_HOME == pylintd
-        finally:
-            try:
-                os.remove(pylintd)
-            except FileNotFoundError:
-                pass
+        assert not any(
+            "migrated" in str(w.message)
+            for w in second_caught
+            if issubclass(w.category, UserWarning)
+        )
     finally:
-        del os.environ["PYLINTHOME"]
+        monkeypatch.undo()
+        reload(config)
+
+
+@pytest.mark.usefixtures("pop_pylintrc")
+def test_pylint_home_migration_falls_back_on_error(monkeypatch, tmp_path):
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    monkeypatch.setenv(HOME, str(home_dir))
+    legacy_dir = home_dir / ".pylint.d"
+    legacy_dir.mkdir()
+    blocked_path = tmp_path / "xdg" / "pylint"
+    blocked_path.parent.mkdir(parents=True, exist_ok=True)
+    blocked_path.touch()
+
+    def fake_user_data_dir(appname, *_args, **_kwargs):
+        assert appname == "pylint"
+        return str(blocked_path)
+
+    monkeypatch.setattr(platformdirs, "user_data_dir", fake_user_data_dir)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        reload(config)
+
+    try:
+        assert Path(config.PYLINT_HOME) == legacy_dir
+        messages = [
+            str(w.message)
+            for w in caught
+            if issubclass(w.category, UserWarning)
+        ]
+        assert any("Falling back to legacy" in message for message in messages)
+    finally:
+        monkeypatch.undo()
+        reload(config)
+
+
+@pytest.mark.usefixtures("pop_pylintrc")
+def test_pylint_home_fallback_when_home_unknown(monkeypatch):
+    monkeypatch.setattr(os.path, "expanduser", lambda _: "~")
+    try:
+        with tempdir():
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                reload(config)
+
+            assert config.PYLINT_HOME == config.LEGACY_DATA_DIR_NAME
+            assert Path(config.PYLINT_HOME).exists()
+            assert any(
+                issubclass(w.category, DeprecationWarning) for w in caught
+            )
+    finally:
+        monkeypatch.undo()
+        reload(config)
 
 
 @pytest.mark.usefixtures("pop_pylintrc")

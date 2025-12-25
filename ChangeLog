@@ -13,6 +13,10 @@ Release date: TBA
 ..
   Put bug fixes that should not wait for a new minor version here
 
+* Pylint's persistent data now follows the XDG Base Directory specification by
+  default, using ``platformdirs`` with automatic migration from the legacy
+  ``~/.pylint.d`` directory.
+
 * Added ``unspecified-encoding``: Emitted when open() is called without specifying an encoding
 
   Closes #3826
