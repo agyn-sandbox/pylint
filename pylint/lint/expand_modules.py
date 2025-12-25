@@ -53,10 +53,11 @@ def _is_ignored_file(
     ignore_list_paths_re: list[Pattern[str]],
 ) -> bool:
     basename = os.path.basename(element)
+    normalized_element = os.path.normpath(element)
     return (
         basename in ignore_list
         or _is_in_ignore_list_re(basename, ignore_list_re)
-        or _is_in_ignore_list_re(element, ignore_list_paths_re)
+        or _is_in_ignore_list_re(normalized_element, ignore_list_paths_re)
     )
 
 
@@ -140,9 +141,12 @@ def expand_modules(
             ):
                 if filepath == subfilepath:
                     continue
+                normalized_subfilepath = os.path.normpath(subfilepath)
                 if _is_in_ignore_list_re(
                     os.path.basename(subfilepath), ignore_list_re
-                ) or _is_in_ignore_list_re(subfilepath, ignore_list_paths_re):
+                ) or _is_in_ignore_list_re(
+                    normalized_subfilepath, ignore_list_paths_re
+                ):
                     continue
 
                 modpath = _modpath_from_file(
