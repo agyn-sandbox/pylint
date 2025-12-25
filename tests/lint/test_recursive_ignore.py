@@ -43,9 +43,11 @@ def _linted_paths(
     recursive: bool,
     extra_args: list[str] | None = None,
 ) -> set[Path]:
+    rcfile = base / "pylintrc"
+    rcfile.write_text("[MASTER]\n", encoding="utf-8")
     reporter = GenericTestReporter()
     args = [
-        "--rcfile=/dev/null",
+        f"--rcfile={rcfile}",
         "--disable=all",
         "--enable=missing-module-docstring",
         "--persistent=n",
