@@ -7,7 +7,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from pylint.lint.expand_modules import expand_modules
-from pylint.lint.pylinter import PyLinter
 
 
 def test_ignore_hidden_dir_with_recursive(tmp_path, linter, monkeypatch):
@@ -19,7 +18,7 @@ def test_ignore_hidden_dir_with_recursive(tmp_path, linter, monkeypatch):
     monkeypatch.chdir(tmp_path)
     linter.global_set_option("ignore-paths", r"^\.a")
 
-    discovered = tuple(PyLinter._discover_files(["."]))
+    discovered = tuple(linter._discover_files(["."]))
     modules, errors = expand_modules(
         discovered,
         list(linter.config.ignore),
@@ -51,7 +50,7 @@ def test_ignore_paths_normalization_removes_leading_dot_slash(
     )
 
     assert not errors
-    assert modules == []
+    assert not modules
 
 
 def test_ignore_paths_supports_prefixed_dot_slash(tmp_path, linter, monkeypatch):
@@ -63,7 +62,7 @@ def test_ignore_paths_supports_prefixed_dot_slash(tmp_path, linter, monkeypatch)
     monkeypatch.chdir(tmp_path)
     linter.global_set_option("ignore-paths", r"^\./\.a")
 
-    discovered = tuple(PyLinter._discover_files(["."]))
+    discovered = tuple(linter._discover_files(["."]))
     modules, errors = expand_modules(
         discovered,
         list(linter.config.ignore),
