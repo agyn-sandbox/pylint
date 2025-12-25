@@ -739,7 +739,10 @@ class SimilarChecker(BaseChecker, Similar, MapReduceMixin):
                 "default": DEFAULT_MIN_SIMILARITY_LINE,
                 "type": "int",
                 "metavar": "<int>",
-                "help": "Minimum lines number of a similarity.",
+                "help": (
+                    "Minimum lines number of a similarity; set to 0 to disable "
+                    "duplicate-code detection."
+                ),
             },
         ),
         (
@@ -801,6 +804,8 @@ class SimilarChecker(BaseChecker, Similar, MapReduceMixin):
         """
         BaseChecker.set_option(self, optname, value, action, optdict)
         if optname == "min-similarity-lines":
+            if self.config.min_similarity_lines < 0:
+                self.config.min_similarity_lines = 0
             self.min_lines = self.config.min_similarity_lines
         elif optname == "ignore-comments":
             self.ignore_comments = self.config.ignore_comments
@@ -830,6 +835,11 @@ class SimilarChecker(BaseChecker, Similar, MapReduceMixin):
 
     def close(self):
         """compute and display similarities on closing (i.e. end of parsing)"""
+        if self.min_lines == 0:
+            if self.stats is not None:
+                self.stats["nb_duplicated_lines"] = 0
+                self.stats["percent_duplicated_lines"] = 0
+            return
         total = sum(len(lineset) for lineset in self.linesets)
         duplicated = 0
         stats = self.stats

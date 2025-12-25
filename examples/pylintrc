@@ -297,7 +297,7 @@ ignore-docstrings=yes
 # Ignore imports when computing similarities.
 ignore-imports=no
 
-# Minimum lines number of a similarity.
+# Minimum lines number of a similarity (set to 0 to disable duplicate-code detection).
 min-similarity-lines=4
 
 

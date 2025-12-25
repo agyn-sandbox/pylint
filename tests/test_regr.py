@@ -29,6 +29,7 @@ import astroid
 import pytest
 
 from pylint import testutils
+from pylint.checkers.similar import SimilarChecker
 from pylint.lint.pylinter import PyLinter
 
 REGR_DATA = join(dirname(abspath(__file__)), "regrtest_data")
@@ -138,3 +139,41 @@ def test_pylint_config_attr() -> None:
     assert len(inferred) == 1
     assert inferred[0].root().name == "optparse"
     assert inferred[0].name == "Values"
+
+
+def _configure_duplicate_code_linter(
+    linter: PyLinter, min_similarity_lines: int
+) -> str:
+    target = join(REGR_DATA, "duplicate_data_raw_strings")
+    linter.disable("all")
+    linter.enable("duplicate-code")
+    linter.global_set_option("min-similarity-lines", min_similarity_lines)
+    return target
+
+
+def test_duplicate_code_disabled_with_min_similarity_zero(
+    finalize_linter: PyLinter, monkeypatch
+) -> None:
+    def fail_compute(_self):
+        raise AssertionError(
+            "_compute_sims should not run when min-similarity-lines is 0"
+        )
+
+    monkeypatch.setattr(SimilarChecker, "_compute_sims", fail_compute)
+    target = _configure_duplicate_code_linter(finalize_linter, 0)
+    finalize_linter.check(target)
+    output = finalize_linter.reporter.finalize().strip()
+    assert output == ""
+    assert finalize_linter.stats["nb_duplicated_lines"] == 0
+    assert finalize_linter.stats["percent_duplicated_lines"] == 0.0
+
+
+def test_duplicate_code_reports_with_positive_min_similarity(
+    finalize_linter: PyLinter,
+) -> None:
+    target = _configure_duplicate_code_linter(finalize_linter, 1)
+    finalize_linter.check(target)
+    output = finalize_linter.reporter.finalize().strip()
+    assert "Similar lines in" in output
+    assert finalize_linter.stats["nb_duplicated_lines"] > 0
+    assert "duplicate-code" in finalize_linter.stats["by_msg"]
