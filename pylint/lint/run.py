@@ -76,8 +76,8 @@ def _cpu_count() -> int:
     else:
         cpu_count = 1
     if cpu_share is not None:
-        return min(cpu_share, cpu_count)
-    return cpu_count
+        return max(1, min(cpu_share, cpu_count))
+    return max(1, cpu_count)
 
 
 UNUSED_PARAM_SENTINEL = object()
