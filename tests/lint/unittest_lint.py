@@ -107,6 +107,38 @@ def tempdir() -> Iterator[str]:
         rmtree(abs_tmp)
 
 
+def _create_recursive_linter_for_test(
+    *,
+    ignore: Iterable[str] | None = None,
+    ignore_patterns: Iterable[re.Pattern[str]] | None = None,
+    ignore_paths: Iterable[re.Pattern[str]] | None = None,
+) -> PyLinter:
+    reporter = testutils.GenericTestReporter()
+    linter = PyLinter()
+    linter.set_reporter(reporter)
+    linter.config.persistent = 0
+    checkers.initialize(linter)
+    linter.config.recursive = True
+
+    ignore_list = list(linter.config.ignore)
+    if ignore:
+        ignore_list.extend(ignore)
+    linter.config.ignore = ignore_list
+
+    pattern_list = list(linter.config.ignore_patterns)
+    if ignore_patterns:
+        pattern_list.extend(ignore_patterns)
+    linter.config.ignore_patterns = pattern_list
+
+    path_pattern_list = list(linter.config.ignore_paths)
+    if ignore_paths:
+        path_pattern_list.extend(ignore_paths)
+    linter.config.ignore_paths = path_pattern_list
+
+    linter.open()
+    return linter
+
+
 @pytest.fixture
 def fake_path() -> Iterator[Iterable[str]]:
     orig = list(sys.path)
@@ -796,6 +828,80 @@ def test_custom_should_analyze_file() -> None:
         messages = reporter.messages
         assert len(messages) == 1
         assert "invalid syntax" in messages[0].msg
+
+
+def test_recursive_respects_ignore_patterns(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    hidden_dir = project / ".a"
+    hidden_dir.mkdir()
+    (hidden_dir / "foo.py").write_text("x = 1\n", encoding="utf-8")
+    (project / "bar.py").write_text("x = 1\n", encoding="utf-8")
+
+    linter = _create_recursive_linter_for_test(
+        ignore_patterns=[re.compile(r"^\.")]
+    )
+    linter.check([str(project)])
+
+    linted_paths = {Path(msg.path).resolve() for msg in linter.reporter.messages}
+    assert (project / "bar.py").resolve() in linted_paths
+    assert (hidden_dir / "foo.py").resolve() not in linted_paths
+
+
+def test_recursive_respects_ignore(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    build_dir = project / "build"
+    build_dir.mkdir()
+    normal_dir = project / "normal"
+    normal_dir.mkdir()
+    (build_dir / "x.py").write_text("x = 1\n", encoding="utf-8")
+    (normal_dir / "y.py").write_text("x = 1\n", encoding="utf-8")
+
+    linter = _create_recursive_linter_for_test(ignore=["build"])
+    linter.check([str(project)])
+
+    linted_paths = {Path(msg.path).resolve() for msg in linter.reporter.messages}
+    assert (normal_dir / "y.py").resolve() in linted_paths
+    assert (build_dir / "x.py").resolve() not in linted_paths
+
+
+def test_recursive_respects_ignore_paths(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    pkg_dir = project / "pkg"
+    pkg_dir.mkdir()
+    secret_dir = pkg_dir / "secret"
+    secret_dir.mkdir()
+    public_dir = pkg_dir / "public"
+    public_dir.mkdir()
+    (secret_dir / "foo.py").write_text("x = 1\n", encoding="utf-8")
+    (public_dir / "bar.py").write_text("x = 1\n", encoding="utf-8")
+
+    linter = _create_recursive_linter_for_test(
+        ignore_paths=[re.compile(r".*/secret/.*")]
+    )
+    linter.check([str(project)])
+
+    linted_paths = {Path(msg.path).resolve() for msg in linter.reporter.messages}
+    assert (public_dir / "bar.py").resolve() in linted_paths
+    assert (secret_dir / "foo.py").resolve() not in linted_paths
+
+
+def test_recursive_ignores_package_subdirectories(tmp_path: Path) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+    ignored_dir = package / "ignored_dir"
+    ignored_dir.mkdir()
+    (ignored_dir / "z.py").write_text("x = 1\n", encoding="utf-8")
+
+    linter = _create_recursive_linter_for_test(ignore=["ignored_dir"])
+    linter.check([str(package)])
+
+    linted_paths = {Path(msg.path).resolve() for msg in linter.reporter.messages}
+    assert (package / "__init__.py").resolve() in linted_paths
+    assert (ignored_dir / "z.py").resolve() not in linted_paths
 
 
 # we do the check with jobs=1 as well, so that we are sure that the duplicates
