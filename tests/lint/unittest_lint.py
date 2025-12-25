@@ -637,6 +637,8 @@ def test_pylint_home_env_override(monkeypatch, tmp_path):
         assert config.PYLINT_HOME == str(target)
     finally:
         monkeypatch.undo()
+        monkeypatch.undo()
+        monkeypatch.undo()
         reload(config)
 
 
@@ -737,6 +739,47 @@ def test_pylint_home_migration_falls_back_on_error(monkeypatch, tmp_path):
             if issubclass(w.category, UserWarning)
         ]
         assert any("Falling back to legacy" in message for message in messages)
+    finally:
+        monkeypatch.undo()
+        reload(config)
+
+
+@pytest.mark.usefixtures("pop_pylintrc")
+def test_pylint_home_warns_when_directories_unwritable(monkeypatch, tmp_path):
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    monkeypatch.setenv(HOME, str(home_dir))
+    target_dir = tmp_path / "xdg" / "pylint"
+    legacy_dir = home_dir / ".pylint.d"
+
+    def fake_user_data_dir(appname, *_args, **_kwargs):
+        assert appname == "pylint"
+        return str(target_dir)
+
+    monkeypatch.setattr(platformdirs, "user_data_dir", fake_user_data_dir)
+
+    original_mkdir = Path.mkdir
+
+    def failing_mkdir(self, *args, **kwargs):
+        if str(self) in {str(target_dir), str(legacy_dir)}:
+            raise OSError("permission denied")
+        return original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", failing_mkdir)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        reload(config)
+
+    try:
+        assert config.PYLINT_HOME == str(legacy_dir)
+        warning_messages = [
+            str(w.message)
+            for w in caught
+            if issubclass(w.category, UserWarning)
+        ]
+        assert any("Unable to create Pylint data directory" in msg for msg in warning_messages)
+        assert any("Unable to create legacy Pylint data directory" in msg for msg in warning_messages)
     finally:
         monkeypatch.undo()
         reload(config)

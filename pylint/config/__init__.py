@@ -92,7 +92,13 @@ def _prepare_data_directory(target: Path, legacy: Path) -> Path:
             f"Pylint data path '{target}' exists but is not a directory. "
             f"Falling back to legacy location '{legacy}'."
         )
-        legacy.mkdir(parents=True, exist_ok=True)
+        try:
+            legacy.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            _warn(
+                f"Unable to create legacy Pylint data directory '{legacy}': {error}. "
+                "Persistent data will be disabled for this run."
+            )
         return legacy
 
     try:
@@ -102,7 +108,13 @@ def _prepare_data_directory(target: Path, legacy: Path) -> Path:
             f"Unable to create Pylint data directory '{target}': {error}. "
             f"Falling back to legacy location '{legacy}'."
         )
-        legacy.mkdir(parents=True, exist_ok=True)
+        try:
+            legacy.mkdir(parents=True, exist_ok=True)
+        except OSError as legacy_error:
+            _warn(
+                f"Unable to create legacy Pylint data directory '{legacy}': {legacy_error}. "
+                "Persistent data will be disabled for this run."
+            )
         return legacy
 
     if legacy.exists() and not sentinel.exists():
@@ -119,9 +131,20 @@ def _prepare_data_directory(target: Path, legacy: Path) -> Path:
                 f"Using legacy directory for this run."
             )
             shutil.rmtree(str(target), ignore_errors=True)
-            legacy.mkdir(parents=True, exist_ok=True)
+            try:
+                legacy.mkdir(parents=True, exist_ok=True)
+            except OSError as legacy_error:
+                _warn(
+                    f"Unable to create legacy Pylint data directory '{legacy}': {legacy_error}. "
+                    "Persistent data will be disabled for this run."
+                )
             return legacy
-        sentinel.touch(exist_ok=True)
+        try:
+            sentinel.touch(exist_ok=True)
+        except OSError as error:
+            _warn(
+                f"Unable to create migration sentinel '{sentinel}': {error}."
+            )
         _warn(
             f"Pylint persistent data migrated from '{legacy}' to '{target}'."
         )
@@ -137,7 +160,13 @@ def get_pylint_data_dir() -> str:
     home_path = _resolve_home()
     if home_path is None:
         fallback = Path(LEGACY_DATA_DIR_NAME)
-        fallback.mkdir(parents=True, exist_ok=True)
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            _warn(
+                f"Unable to create fallback Pylint data directory '{fallback}': {error}. "
+                "Persistent data will be disabled for this run."
+            )
         _warn(
             "HOME directory could not be resolved. Falling back to './.pylint.d'. "
             "This fallback is deprecated and will be removed in a future release.",
