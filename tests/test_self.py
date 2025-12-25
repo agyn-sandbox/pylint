@@ -1430,6 +1430,13 @@ class TestCallbackOptions:
             assert run.verbose
 
     @staticmethod
+    def test_verbose_short() -> None:
+        """Test the -v flag behaves like --verbose."""
+        with pytest.raises(SystemExit):
+            run = Run(["-v"])
+            assert run.verbose
+
+    @staticmethod
     def test_enable_all_extensions() -> None:
         """Test to see if --enable-all-extensions does indeed load all extensions."""
         # Record all extensions
