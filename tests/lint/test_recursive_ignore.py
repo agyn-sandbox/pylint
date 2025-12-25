@@ -1,13 +1,15 @@
 """Tests ensuring recursive discovery respects ignore options."""
 
+# pylint: disable=redefined-outer-name
+
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
 
-from pylint.lint.pylinter import PyLinter
+from pylint.lint import Run
+from pylint.testutils import GenericTestReporter
 
 
 def _write_module(path: Path) -> None:
@@ -34,13 +36,32 @@ def _build_sample_tree(root: Path) -> None:
     _write_module(root / "single.py")
 
 
-def _recursive_discovered_paths(
-    linter: PyLinter, base: Path, targets: list[Path]
+def _linted_paths(
+    base: Path,
+    targets: list[Path],
+    *,
+    recursive: bool,
+    extra_args: list[str] | None = None,
 ) -> set[Path]:
-    linter.open()
+    reporter = GenericTestReporter()
+    args = [
+        "--rcfile=/dev/null",
+        "--disable=all",
+        "--enable=missing-module-docstring",
+        "--persistent=n",
+        "--score=n",
+        "--reports=n",
+        "--jobs=1",
+        "--recursive=y" if recursive else "--recursive=n",
+    ]
+    if extra_args:
+        args.extend(extra_args)
+    args.extend(str(target) for target in targets)
+    Run(args, reporter=reporter, exit=False)
     return {
-        Path(path).resolve().relative_to(base)
-        for path in linter._discover_files([str(target) for target in targets])
+        Path(message.abspath).resolve().relative_to(base)
+        for message in reporter.messages
+        if message.symbol == "missing-module-docstring"
     }
 
 
@@ -50,18 +71,17 @@ def sample_tree(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_recursive_ignore_patterns_skip_hidden_directories(
-    linter: PyLinter, sample_tree: Path
-) -> None:
-    linter.config.recursive = True
-    linter.config.ignore_patterns = tuple(
-        list(linter.config.ignore_patterns) + [re.compile(r"^\.")]
+def test_recursive_ignore_patterns_skip_hidden_directories(sample_tree: Path) -> None:
+    linted = _linted_paths(
+        sample_tree,
+        [sample_tree],
+        recursive=True,
+        extra_args=["--ignore-patterns=^\\.\\w"],
     )
 
-    linted = _recursive_discovered_paths(linter, sample_tree, [sample_tree])
-
     assert Path("single.py") in linted
-    assert Path("pkg") in linted
+    assert Path("pkg/__init__.py") in linted
+    assert Path("pkg/mod.py") in linted
     assert Path("a/foo.py") in linted
 
     assert Path(".hidden/bar.py") not in linted
@@ -69,58 +89,53 @@ def test_recursive_ignore_patterns_skip_hidden_directories(
     assert Path(".a/foo.py") not in linted
 
 
-def test_recursive_ignore_option_skips_directory(
-    linter: PyLinter, sample_tree: Path
-) -> None:
-    linter.config.recursive = True
-    linter.config.ignore = tuple(list(linter.config.ignore) + [".a"])
-
-    linted = _recursive_discovered_paths(linter, sample_tree, [sample_tree])
+def test_recursive_ignore_option_skips_directory(sample_tree: Path) -> None:
+    linted = _linted_paths(
+        sample_tree,
+        [sample_tree],
+        recursive=True,
+        extra_args=["--ignore=.a"],
+    )
 
     assert Path(".a/foo.py") not in linted
     assert Path("a/foo.py") in linted
     assert Path("single.py") in linted
 
 
-def test_recursive_ignore_paths_skip_pattern(
-    linter: PyLinter, sample_tree: Path
-) -> None:
-    linter.config.recursive = True
-    linter.config.ignore_paths = tuple(
-        list(linter.config.ignore_paths)
-        + [re.compile(r".*/\.a(?:/|\\|$).*")]
+def test_recursive_ignore_paths_skip_pattern(sample_tree: Path) -> None:
+    linted = _linted_paths(
+        sample_tree,
+        [sample_tree],
+        recursive=True,
+        extra_args=["--ignore-paths=.*/\\.a(?:/|\\\\|$).*"],
     )
-
-    linted = _recursive_discovered_paths(linter, sample_tree, [sample_tree])
 
     assert Path(".a/foo.py") not in linted
     assert Path("a/foo.py") in linted
-    assert Path("pkg") in linted
+    assert Path("pkg/__init__.py") in linted
+    assert Path("pkg/mod.py") in linted
 
 
-def test_recursive_ignore_patterns_on_filename(
-    linter: PyLinter, sample_tree: Path
-) -> None:
-    linter.config.recursive = True
-    linter.config.ignore_patterns = tuple(
-        list(linter.config.ignore_patterns) + [re.compile(r"^foo\.py$")]
+def test_recursive_ignore_patterns_on_filename(sample_tree: Path) -> None:
+    linted = _linted_paths(
+        sample_tree,
+        [sample_tree],
+        recursive=True,
+        extra_args=["--ignore-patterns=^foo\\.py$"],
     )
-
-    linted = _recursive_discovered_paths(linter, sample_tree, [sample_tree])
 
     assert Path("a/foo.py") not in linted
     assert Path(".a/foo.py") not in linted
-    assert Path("pkg") in linted
+    assert Path("pkg/__init__.py") in linted
+    assert Path("pkg/mod.py") in linted
     assert Path("single.py") in linted
 
 
-def test_non_recursive_single_file_unchanged(
-    linter: PyLinter, sample_tree: Path
-) -> None:
-    linter.config.recursive = False
+def test_non_recursive_single_file_unchanged(sample_tree: Path) -> None:
+    linted = _linted_paths(
+        sample_tree,
+        [sample_tree / "single.py"],
+        recursive=False,
+    )
 
-    linter.open()
-    module_descriptions = linter._expand_files([str(sample_tree / "single.py")])
-    linted = {Path(description["path"]) for description in module_descriptions}
-
-    assert Path(sample_tree / "single.py") in linted
+    assert Path("single.py") in linted
