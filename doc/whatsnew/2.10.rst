@@ -21,6 +21,10 @@ Other Changes
 =============
 
 
+* Persistent data now defaults to the XDG Base Directory compliant location as
+  resolved by ``platformdirs``. Existing ``~/.pylint.d`` data is migrated
+  automatically on first use.
+
 * Performance of the Similarity checker has been improved.
 
 * Added ``time.clock`` to deprecated functions/methods for python 3.3

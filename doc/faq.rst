@@ -91,12 +91,15 @@ or if "directory" is in the python path.
 Analysis data are stored as a pickle file in a directory which is
 localized using the following rules:
 
-* value of the PYLINTHOME environment variable if set
+* value of the PYLINTHOME environment variable if set.
 
-* ".pylint.d" subdirectory of the user's home directory if it is found
-	(not always findable on Windows platforms)
+* otherwise, the per-user data directory provided by the operating system
+  (via the XDG Base Directory specification implemented through
+  ``platformdirs``). When this new location is first used any existing data in
+  ``~/.pylint.d`` is migrated automatically.
 
-* ".pylint.d" directory in the current directory
+* if the user's home directory cannot be determined, a ``.pylint.d`` directory
+  is created in the current working directory (deprecated fallback).
 
 3.3 How do I find the option name (for pylintrc) corresponding to a specific command line option?
 --------------------------------------------------------------------------------------------------------
