@@ -84,6 +84,7 @@ class ClassDiagram(Figure, FilterMixIn):
             for n, m in node.items()
             if isinstance(m, astroid.FunctionDef) and decorated_with_property(m)
         ]
+        annotations = getattr(node, "inferred_annotations", {})
         for node_name, associated_nodes in (
             list(node.instance_attrs_type.items())
             + list(node.locals_type.items())
@@ -91,10 +92,18 @@ class ClassDiagram(Figure, FilterMixIn):
         ):
             if not self.show_attr(node_name):
                 continue
+            if isinstance(associated_nodes, astroid.FunctionDef):
+                attrs.append(node_name)
+                continue
+            annotation = annotations.get(node_name)
+            if annotation:
+                attrs.append(f"{node_name} : {annotation}")
+                continue
             names = self.class_names(associated_nodes)
             if names:
-                node_name = "{} : {}".format(node_name, ", ".join(names))
-            attrs.append(node_name)
+                attrs.append(f"{node_name} : {', '.join(names)}")
+            else:
+                attrs.append(node_name)
         return sorted(attrs)
 
     def get_methods(self, node):

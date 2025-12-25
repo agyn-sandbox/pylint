@@ -14,6 +14,7 @@
 Visitor doing some postprocessing on the astroid tree.
 Try to resolve definitions (namespace) dictionary, relationship...
 """
+import ast
 import collections
 import os
 import traceback
@@ -99,6 +100,15 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
       list of implemented interface _objects_ (only on astroid.Class nodes)
     """
 
+    _OPTIONAL_NAMES = {"Optional", "typing.Optional"}
+    _UNION_NAMES = {"Union", "typing.Union"}
+    _LIST_NAMES = {"List", "typing.List", "list"}
+    _SET_NAMES = {"Set", "typing.Set", "set"}
+    _DICT_NAMES = {"Dict", "typing.Dict", "dict"}
+    _TUPLE_NAMES = {"Tuple", "typing.Tuple", "tuple"}
+    _ANNOTATED_NAMES = {"Annotated", "typing.Annotated"}
+    _LITERAL_NAMES = {"Literal", "typing.Literal"}
+
     def __init__(self, project, inherited_interfaces=0, tag=False):
         IdGeneratorMixIn.__init__(self)
         utils.LocalsVisitor.__init__(self)
@@ -166,6 +176,8 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
             for assignattr in assignattrs:
                 if not isinstance(assignattr, astroid.Unknown):
                     self.handle_assignattr_type(assignattr, node)
+        node.inferred_annotations = {}
+        self._collect_annotations(node)
         # resolve implemented interface
         try:
             node.implements = list(interfaces(node, self.inherited_interfaces))
@@ -235,6 +247,369 @@ class Linker(IdGeneratorMixIn, utils.LocalsVisitor):
             parent.instance_attrs_type[node.attrname] = list(current | values)
         except astroid.InferenceError:
             pass
+
+    def _collect_annotations(self, class_node):
+        if not hasattr(class_node, "body"):
+            return
+        for stmt in class_node.body:
+            if isinstance(stmt, astroid.AnnAssign) and isinstance(
+                stmt.target, astroid.AssignName
+            ):
+                attr_name = stmt.target.name
+                typestr, targets = self._resolve_annotation_to_typestr(
+                    stmt.annotation, class_node
+                )
+                if typestr:
+                    class_node.inferred_annotations[attr_name] = typestr
+                self._extend_type_mapping(class_node.locals_type, attr_name, targets)
+        for method in getattr(class_node, "mymethods", lambda: [])():
+            if method.type != "method":
+                continue
+            self_names = self._get_self_names(method)
+            if not self_names:
+                continue
+            param_annotations = self._extract_param_annotations(method)
+            for stmt in method.body:
+                if (
+                    isinstance(stmt, astroid.AnnAssign)
+                    and isinstance(stmt.target, astroid.AssignAttr)
+                    and self._is_self_attribute(stmt.target, self_names)
+                ):
+                    attr_name = stmt.target.attrname
+                    typestr, targets = self._resolve_annotation_to_typestr(
+                        stmt.annotation, method
+                    )
+                    if typestr:
+                        class_node.inferred_annotations[attr_name] = typestr
+                    self._extend_type_mapping(
+                        class_node.instance_attrs_type, attr_name, targets
+                    )
+                elif isinstance(stmt, astroid.Assign):
+                    for target in stmt.targets:
+                        if not (
+                            isinstance(target, astroid.AssignAttr)
+                            and self._is_self_attribute(target, self_names)
+                            and isinstance(stmt.value, astroid.Name)
+                        ):
+                            continue
+                        attr_name = target.attrname
+                        annotation = param_annotations.get(stmt.value.name)
+                        if not annotation:
+                            continue
+                        typestr, targets = annotation
+                        if typestr and attr_name not in class_node.inferred_annotations:
+                            class_node.inferred_annotations[attr_name] = typestr
+                        self._extend_type_mapping(
+                            class_node.instance_attrs_type, attr_name, targets
+                        )
+
+    @staticmethod
+    def _extend_type_mapping(mapping, name, nodes):
+        if not nodes:
+            return
+        current = mapping[name]
+        for node in nodes:
+            if node not in current:
+                current.append(node)
+
+    def _extract_param_annotations(self, method):
+        annotations = {}
+
+        def register(arg_node, annotation_node):
+            if annotation_node is None:
+                return
+            typestr, targets = self._resolve_annotation_to_typestr(
+                annotation_node, method
+            )
+            if typestr or targets:
+                annotations[arg_node.name] = (typestr, targets)
+
+        args = method.args
+        posonlyargs = getattr(args, "posonlyargs", [])
+        posonly_annotations = getattr(args, "posonlyargs_annotations", [])
+        for arg, ann in zip(posonlyargs, posonly_annotations):
+            register(arg, ann)
+        positional_annotations = list(args.annotations)
+        for arg, ann in zip(args.args, positional_annotations):
+            register(arg, ann)
+        if args.vararg and args.varargannotation:
+            register(args.vararg, args.varargannotation)
+        kwonly_annotations = list(args.kwonlyargs_annotations)
+        for arg, ann in zip(args.kwonlyargs, kwonly_annotations):
+            register(arg, ann)
+        if args.kwarg and args.kwargannotation:
+            register(args.kwarg, args.kwargannotation)
+        return annotations
+
+    def _resolve_annotation_to_typestr(self, annotation, context):
+        if annotation is None:
+            return "", set()
+        if isinstance(annotation, astroid.Const) and isinstance(annotation.value, str):
+            source = annotation.value
+        else:
+            try:
+                source = annotation.as_string()
+            except AttributeError:
+                return "", set()
+        source = source.strip()
+        if not source:
+            return "", set()
+        try:
+            expr = ast.parse(source, mode="eval").body
+        except SyntaxError:
+            normalized = source.replace("typing.", "")
+            return normalized, set()
+        normalized, referenced = self._normalize_annotation_expression(expr)
+        targets = self._lookup_class_targets(referenced, context)
+        return normalized, targets
+
+    def _normalize_annotation_expression(self, node, parent=None, grandparent=None):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            parts = []
+            refs = set()
+            for child in self._flatten_union(node):
+                text, child_refs = self._normalize_annotation_expression(
+                    child, parent, grandparent
+                )
+                parts.append(text)
+                refs |= child_refs
+            return " | ".join(self._dedupe_ordered(parts)), refs
+        if isinstance(node, ast.Subscript):
+            base_name = self._qualified_name(node.value)
+            args = list(self._iter_subscript_args(node.slice))
+            if base_name in self._OPTIONAL_NAMES:
+                parts = []
+                refs = set()
+                for arg in args:
+                    text, child_refs = self._normalize_annotation_expression(
+                        arg, node, parent
+                    )
+                    parts.append(text)
+                    refs |= child_refs
+                parts.append("None")
+                return " | ".join(self._dedupe_ordered(parts)), refs
+            if base_name in self._UNION_NAMES:
+                parts = []
+                refs = set()
+                for arg in args:
+                    text, child_refs = self._normalize_annotation_expression(
+                        arg, node, parent
+                    )
+                    parts.append(text)
+                    refs |= child_refs
+                return " | ".join(self._dedupe_ordered(parts)), refs
+            if base_name in self._ANNOTATED_NAMES:
+                if args:
+                    return self._normalize_annotation_expression(args[0], node, parent)
+                return "Annotated", set()
+            if base_name in self._LIST_NAMES:
+                inner, refs = (
+                    self._normalize_annotation_expression(args[0], node, parent)
+                    if args
+                    else ("Any", set())
+                )
+                return f"list[{inner}]", refs
+            if base_name in self._SET_NAMES:
+                inner, refs = (
+                    self._normalize_annotation_expression(args[0], node, parent)
+                    if args
+                    else ("Any", set())
+                )
+                return f"set[{inner}]", refs
+            if base_name in self._DICT_NAMES:
+                if len(args) >= 2:
+                    key_text, key_refs = self._normalize_annotation_expression(
+                        args[0], node, parent
+                    )
+                    value_text, value_refs = self._normalize_annotation_expression(
+                        args[1], node, parent
+                    )
+                    refs = key_refs | value_refs
+                    return f"dict[{key_text}, {value_text}]", refs
+                if args:
+                    inner, refs = self._normalize_annotation_expression(
+                        args[0], node, parent
+                    )
+                    return f"dict[{inner}]", refs
+            if base_name in self._TUPLE_NAMES:
+                parts = []
+                refs = set()
+                for arg in args:
+                    text, child_refs = self._normalize_annotation_expression(
+                        arg, node, parent
+                    )
+                    parts.append(text)
+                    refs |= child_refs
+                return f"tuple[{', '.join(parts)}]", refs
+            base_text, base_refs = self._normalize_annotation_expression(
+                node.value, node, parent
+            )
+            arg_texts = []
+            refs = set(base_refs)
+            for arg in args:
+                text, child_refs = self._normalize_annotation_expression(
+                    arg, node, parent
+                )
+                arg_texts.append(text)
+                refs |= child_refs
+            return f"{base_text}[{', '.join(arg_texts)}]", refs
+        if isinstance(node, ast.Attribute):
+            base_text, base_refs = self._normalize_annotation_expression(
+                node.value, node, parent
+            )
+            if base_text:
+                full = f"{base_text}.{node.attr}"
+            else:
+                full = node.attr
+            base_refs.add(full)
+            return full, base_refs
+        if isinstance(node, ast.Name):
+            return node.id, {node.id}
+        if isinstance(node, ast.Constant):
+            if node.value is None:
+                return "None", set()
+            if isinstance(node.value, str):
+                if (
+                    isinstance(parent, ast.Subscript)
+                    and self._qualified_name(parent.value) in self._LITERAL_NAMES
+                ) or (
+                    isinstance(parent, ast.Tuple)
+                    and isinstance(grandparent, ast.Subscript)
+                    and self._qualified_name(grandparent.value) in self._LITERAL_NAMES
+                ):
+                    return repr(node.value), set()
+                text = node.value.strip()
+                if self._is_valid_identifier(text) or self._is_dotted_identifier(text):
+                    return text, {text}
+                return repr(node.value), set()
+            return repr(node.value), set()
+        if isinstance(node, ast.Tuple):
+            parts = []
+            refs = set()
+            for arg in node.elts:
+                text, child_refs = self._normalize_annotation_expression(
+                    arg, node, parent
+                )
+                parts.append(text)
+                refs |= child_refs
+            return ", ".join(parts), refs
+        if isinstance(node, ast.List):
+            parts = []
+            refs = set()
+            for arg in node.elts:
+                text, child_refs = self._normalize_annotation_expression(
+                    arg, node, parent
+                )
+                parts.append(text)
+                refs |= child_refs
+            return ", ".join(parts), refs
+        if isinstance(node, ast.Ellipsis):
+            return "...", set()
+        try:
+            text = ast.unparse(node)
+        except AttributeError:
+            text = source = ""
+        else:
+            source = text
+        return source, set()
+
+    @staticmethod
+    def _flatten_union(node):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            yield from Linker._flatten_union(node.left)
+            yield from Linker._flatten_union(node.right)
+        else:
+            yield node
+
+    @staticmethod
+    def _iter_subscript_args(slice_node):
+        if isinstance(slice_node, ast.Tuple):
+            return list(slice_node.elts)
+        if isinstance(slice_node, ast.List):
+            return list(slice_node.elts)
+        if hasattr(ast, "Index") and isinstance(
+            slice_node, ast.Index
+        ):  # pragma: no cover
+            return Linker._iter_subscript_args(slice_node.value)
+        return [slice_node]
+
+    @staticmethod
+    def _qualified_name(node):
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            left = Linker._qualified_name(node.value)
+            return f"{left}.{node.attr}" if left else node.attr
+        return None
+
+    @staticmethod
+    def _dedupe_ordered(items):
+        result = []
+        seen = set()
+        for item in items:
+            if item not in seen:
+                seen.add(item)
+                result.append(item)
+        return result
+
+    @staticmethod
+    def _is_valid_identifier(value):
+        return value.isidentifier()
+
+    @staticmethod
+    def _is_dotted_identifier(value):
+        parts = value.split(".")
+        return all(part.isidentifier() for part in parts)
+
+    def _lookup_class_targets(self, names, context):
+        targets = set()
+        for name in names:
+            for node in self._lookup_nodes(name, context):
+                if isinstance(node, astroid.ClassDef) and self._is_project_class(node):
+                    targets.add(node)
+        return targets
+
+    def _lookup_nodes(self, name, context):
+        parts = name.split(".")
+        try:
+            _, nodes = context.lookup(parts[0])
+        except astroid.exceptions.NotFoundError:
+            return []
+        current = list(nodes)
+        for part in parts[1:]:
+            next_nodes = []
+            for node in current:
+                try:
+                    next_nodes.extend(node.igetattr(part))
+                except (astroid.exceptions.NotFoundError, astroid.InferenceError):
+                    continue
+            if not next_nodes:
+                return []
+            current = next_nodes
+        return current
+
+    def _is_project_class(self, class_node):
+        module = class_node.root()
+        return isinstance(module, astroid.Module) and module.name in getattr(
+            self.project, "locals", {}
+        )
+
+    @staticmethod
+    def _is_self_attribute(target, self_names):
+        return (
+            isinstance(target, astroid.AssignAttr)
+            and isinstance(target.expr, astroid.Name)
+            and target.expr.name in self_names
+        )
+
+    @staticmethod
+    def _get_self_names(method):
+        args = method.args
+        if getattr(args, "posonlyargs", None):
+            return {args.posonlyargs[0].name}
+        if args.args:
+            return {args.args[0].name}
+        return set()
 
     def visit_import(self, node):
         """visit an astroid.Import node

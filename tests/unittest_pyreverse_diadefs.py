@@ -18,6 +18,7 @@
 
 """Unit test for the extensions.diadefslib modules"""
 # pylint: disable=redefined-outer-name
+import os
 import sys
 from pathlib import Path
 
@@ -186,6 +187,38 @@ def test_known_values4(HANDLER, PROJECT):
         (True, "DoNothing"),
         (True, "Specialization"),
     ]
+
+
+def test_type_annotations_rendered_in_diagram():
+    path = os.path.join(os.path.dirname(__file__), "type_hint_fixtures", "models.py")
+    project = get_project(path)
+    handler = DiadefsHandler(Config())
+    class_diagram = next(
+        dia
+        for dia in DefaultDiadefGenerator(Linker(project), handler).visit(project)
+        if dia.TYPE == "class"
+    )
+    class_diagram.extract_relationships()
+    service_entity = next(
+        obj for obj in class_diagram.objects if obj.node.name == "Service"
+    )
+    controller_entity = next(
+        obj for obj in class_diagram.objects if obj.node.name == "Controller"
+    )
+
+    assert "repo : Repository | None" in service_entity.attrs
+    assert "cache : dict[str, User]" in service_entity.attrs
+    assert "delegate : Controller | None" in service_entity.attrs
+    assert "users : list[User]" in controller_entity.attrs
+
+    associations = class_diagram.relationships.get("association", [])
+    association_set = {
+        (rel.from_object.title, rel.to_object.title, rel.name) for rel in associations
+    }
+    assert ("Repository", "Service", "repo") in association_set
+    assert ("User", "Service", "owner") in association_set
+    assert ("Controller", "Service", "delegate") in association_set
+    assert ("Service", "Controller", "service") in association_set
 
 
 @pytest.mark.skipif(sys.version_info < (3, 8), reason="Requires dataclasses")
