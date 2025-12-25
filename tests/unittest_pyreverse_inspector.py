@@ -30,6 +30,15 @@ def project():
     return project
 
 
+@pytest.fixture
+def typed_project():
+    path = os.path.join(os.path.dirname(__file__), "type_hint_fixtures", "models.py")
+    project = get_project(path, "typed")
+    linker = inspector.Linker(project)
+    linker.visit(project)
+    return project
+
+
 def test_class_implements(project):
     klass = project.get_module("data.clientmodule_test")["Ancestor"]
     assert hasattr(klass, "implements")
@@ -128,3 +137,76 @@ def test_from_directory(project):
 def test_project_node(project):
     expected = ["data", "data.clientmodule_test", "data.suppliermodule_test"]
     assert sorted(project.keys()) == expected
+
+
+def test_class_annotations_populate_inferred_types(typed_project):
+    module = next(iter(typed_project.values()))
+    service = module["Service"]
+    assert service.inferred_annotations["repo"] == "Repository | None"
+    assert service.inferred_annotations["registry"] == "dict[str, Repository]"
+    repo_nodes = service.locals_type["repo"]
+    assert any(
+        isinstance(node, astroid.nodes.ClassDef) and node.name == "Repository"
+        for node in repo_nodes
+    )
+    registry_nodes = service.locals_type["registry"]
+    assert any(
+        isinstance(node, astroid.nodes.ClassDef) and node.name == "Repository"
+        for node in registry_nodes
+    )
+
+
+def test_instance_annotations_and_forward_refs(typed_project):
+    module = next(iter(typed_project.values()))
+    service = module["Service"]
+    controller = module["Controller"]
+
+    assert service.inferred_annotations["owner"] == "User"
+    assert service.inferred_annotations["cache"] == "dict[str, User]"
+    assert service.inferred_annotations["maybe_user"] == "User | None"
+    assert service.inferred_annotations["users"] == "list[User]"
+    assert service.inferred_annotations["members"] == "set[User]"
+    assert service.inferred_annotations["pairs"] == "tuple[int, User]"
+    assert service.inferred_annotations["delegate"] == "Controller | None"
+    assert service.inferred_annotations["alias"] == "User"
+
+    def has_class(mapping, name, expected):
+        nodes = mapping[name]
+        return any(
+            isinstance(node, astroid.nodes.ClassDef) and node.name == expected
+            for node in nodes
+        )
+
+    assert has_class(service.instance_attrs_type, "owner", "User")
+    assert has_class(service.instance_attrs_type, "cache", "User")
+    assert has_class(service.instance_attrs_type, "maybe_user", "User")
+    assert has_class(service.instance_attrs_type, "users", "User")
+    assert has_class(service.instance_attrs_type, "members", "User")
+    assert has_class(service.instance_attrs_type, "pairs", "User")
+    assert has_class(service.instance_attrs_type, "delegate", "Controller")
+
+    assert controller.inferred_annotations["service"] == "Service"
+    assert controller.inferred_annotations["users"] == "list[User]"
+    assert has_class(controller.instance_attrs_type, "service", "Service")
+    assert has_class(controller.instance_attrs_type, "users", "User")
+
+
+def test_parameter_propagation_for_assignments(typed_project):
+    module = next(iter(typed_project.values()))
+    service = module["Service"]
+    controller = module["Controller"]
+
+    assert service.inferred_annotations["repo"] == "Repository | None"
+    assert "repo" in service.instance_attrs_type
+    repo_nodes = service.instance_attrs_type["repo"]
+    assert any(
+        isinstance(node, astroid.nodes.ClassDef) and node.name == "Repository"
+        for node in repo_nodes
+    )
+    assert controller.inferred_annotations["service"] == "Service"
+
+
+def test_no_annotations_keeps_existing_behaviour(project):
+    module = project.get_module("data.clientmodule_test")
+    specialization = module["Specialization"]
+    assert specialization.inferred_annotations == {}
