@@ -77,6 +77,10 @@ def run_symilar(argv: Sequence[str] | None = None) -> NoReturn:
     SimilarRun(argv or sys.argv[1:])
 
 
+def _normalize_for_cwd_check(path: str) -> str:
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
 def modify_sys_path() -> None:
     """Modify sys path for execution as Python module.
 
@@ -86,9 +90,11 @@ def modify_sys_path() -> None:
     stdlib or pylint's own modules.
     CPython issue: https://bugs.python.org/issue33053
 
-    - Remove the first entry. This will always be either "" or the working directory
-    - Remove the working directory from the second and third entries
-      if PYTHONPATH includes a ":" at the beginning or the end.
+    - Remove the first entry if it refers to the working directory ("", ".", or
+      a path normalizing to ``os.getcwd()``)
+    - Remove the working directory from the second and third entries when
+      they are cwd-equivalent and PYTHONPATH includes a ":" at the beginning
+      or the end.
       https://github.com/PyCQA/pylint/issues/3636
       Don't remove it if PYTHONPATH contains the cwd or '.' as the entry will
       only be added once.
@@ -96,13 +102,30 @@ def modify_sys_path() -> None:
       if pylint is installed in an editable configuration (as the last item).
       https://github.com/PyCQA/pylint/issues/4161
     """
-    sys.path.pop(0)
     env_pythonpath = os.environ.get("PYTHONPATH", "")
     cwd = os.getcwd()
+    normalized_cwd = _normalize_for_cwd_check(cwd)
+
+    def _is_cwd_equivalent(entry: object) -> bool:
+        if not isinstance(entry, str):
+            return False
+        candidate = entry or "."
+        return _normalize_for_cwd_check(candidate) == normalized_cwd
+
+    def _pop_if_cwd(index: int) -> bool:
+        if 0 <= index < len(sys.path) and _is_cwd_equivalent(sys.path[index]):
+            sys.path.pop(index)
+            return True
+        return False
+
+    first_removed = _pop_if_cwd(0)
+
     if env_pythonpath.startswith(":") and env_pythonpath not in (f":{cwd}", ":."):
-        sys.path.pop(0)
+        target_index = 0 if first_removed else 1
+        _pop_if_cwd(target_index)
     elif env_pythonpath.endswith(":") and env_pythonpath not in (f"{cwd}:", ".:"):
-        sys.path.pop(1)
+        target_index = 1 if first_removed else 2
+        _pop_if_cwd(target_index)
 
 
 version = __version__
