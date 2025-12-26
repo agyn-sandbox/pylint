@@ -14,6 +14,7 @@ import traceback
 import warnings
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from pathlib import Path
 from io import TextIOWrapper
 from typing import Any
 
@@ -564,30 +565,114 @@ class PyLinter(
             if not msg.may_be_emitted():
                 self._msgs_state[msg.msgid] = False
 
-    @staticmethod
-    def _discover_files(files_or_modules: Sequence[str]) -> Iterator[str]:
+    def _should_ignore_path(
+        self, path: str, is_dir: bool, *, root: str | None = None
+    ) -> bool:
+        """Return True if *path* should be skipped during recursive discovery."""
+
+        normalized_path = os.path.normpath(os.path.abspath(path))
+
+        relative_segments: tuple[str, ...] = ()
+        if root is not None:
+            normalized_root = os.path.normpath(os.path.abspath(root))
+            try:
+                common_path = os.path.commonpath([normalized_root, normalized_path])
+            except ValueError:
+                common_path = None
+            if common_path == normalized_root:
+                rel = os.path.relpath(normalized_path, start=normalized_root)
+                if rel not in (".", ""):
+                    relative_segments = tuple(
+                        segment
+                        for segment in Path(rel).parts
+                        if segment not in ("", ".", os.pardir)
+                    )
+
+        for segment in relative_segments:
+            if segment in self.config.ignore:
+                return True
+            if any(pattern.match(segment) for pattern in self.config.ignore_patterns):
+                return True
+
+        path_candidates = [normalized_path]
+        if is_dir and not normalized_path.endswith(os.sep):
+            path_candidates.append(f"{normalized_path}{os.sep}")
+
+        if os.sep != "/":
+            normalized_posix = normalized_path.replace(os.sep, "/")
+            path_candidates.append(normalized_posix)
+            if is_dir and not normalized_posix.endswith("/"):
+                path_candidates.append(f"{normalized_posix}/")
+
+        for candidate in path_candidates:
+            for pattern in self.config.ignore_paths:
+                if pattern.match(candidate):
+                    return True
+
+        return False
+
+    def _discover_files(self, files_or_modules: Sequence[str]) -> Iterator[str]:
         """Discover python modules and packages in sub-directory.
 
         Returns iterator of paths to discovered modules and packages.
         """
         for something in files_or_modules:
-            if os.path.isdir(something) and not os.path.isfile(
+            is_directory = os.path.isdir(something)
+            normalized_root = (
+                os.path.normpath(os.path.abspath(something))
+                if os.path.exists(something)
+                else None
+            )
+            if self._should_ignore_path(
+                something,
+                is_directory,
+                root=normalized_root if normalized_root is not None else None,
+            ):
+                continue
+
+            if is_directory and not os.path.isfile(
                 os.path.join(something, "__init__.py")
             ):
                 skip_subtrees: list[str] = []
-                for root, _, files in os.walk(something):
-                    if any(root.startswith(s) for s in skip_subtrees):
-                        # Skip subtree of already discovered package.
+                for root, dirs, files in os.walk(something):
+                    normalized_root_dir = os.path.normpath(root)
+                    if any(
+                        normalized_root_dir.startswith(prefix)
+                        for prefix in skip_subtrees
+                    ):
                         continue
-                    if "__init__.py" in files:
-                        skip_subtrees.append(root)
-                        yield root
-                    else:
-                        yield from (
-                            os.path.join(root, file)
-                            for file in files
-                            if file.endswith(".py")
+                    if self._should_ignore_path(
+                        normalized_root_dir,
+                        True,
+                        root=normalized_root,
+                    ):
+                        dirs[:] = []
+                        continue
+
+                    dirs[:] = [
+                        directory
+                        for directory in dirs
+                        if not self._should_ignore_path(
+                            os.path.join(root, directory),
+                            True,
+                            root=normalized_root,
                         )
+                    ]
+
+                    if "__init__.py" in files:
+                        skip_subtrees.append(normalized_root_dir)
+                        yield root
+                        continue
+
+                    for file in files:
+                        if not file.endswith(".py"):
+                            continue
+                        file_path = os.path.join(root, file)
+                        if self._should_ignore_path(
+                            file_path, False, root=normalized_root
+                        ):
+                            continue
+                        yield file_path
             else:
                 yield something
 
