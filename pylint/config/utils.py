@@ -218,6 +218,12 @@ def _preprocess_options(run: Run, args: Sequence[str]) -> list[str]:
     i = 0
     while i < len(args):
         argument = args[i]
+
+        # Handle short -v same as --verbose (early effect without argument)
+        if argument == "-v":
+            _set_verbose_mode(run, None)
+            i += 1
+            continue
         if not argument.startswith("--"):
             processed_args.append(argument)
             i += 1

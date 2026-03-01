@@ -157,6 +157,18 @@ def test_verbose_output_no_config(capsys: CaptureFixture) -> None:
                 Run(["--verbose"])
             out = capsys.readouterr()
             assert "No config file found, using default configuration" in out.err
+@pytest.mark.usefixtures("pop_pylintrc")
+def test_verbose_output_no_config_short(capsys: CaptureFixture) -> None:
+    """Test that we print a log message in verbose mode with -v and no file."""
+    with tempdir() as chroot:
+        with fake_home():
+            chroot_path = Path(chroot)
+            testutils.create_files(["a/b/c/d/__init__.py"])
+            os.chdir(chroot_path / "a/b/c")
+            with pytest.raises(SystemExit):
+                Run(["-v"])
+            out = capsys.readouterr()
+            assert "No config file found, using default configuration" in out.err
 
 
 @pytest.mark.parametrize(
